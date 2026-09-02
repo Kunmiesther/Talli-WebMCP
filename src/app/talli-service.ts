@@ -14,10 +14,25 @@ import { AdvancedInterpreter, type AdvancedInterpreterInput } from '../interpret
 import { compileLedgerIntent } from '../llm/intent-compiler.js';
 import { createConfiguredStructuredActionModel } from '../llm/structured-action-model.js';
 import { parseExplicitLedgerIntent } from './explicit-intent.js';
+import {
+  type PrepareLedgerMutationRequest,
+  type ProposalAction,
+  type ProposalCandidate,
+  cloneLedgerDocument,
+  computeLedgerFingerprint,
+  formatProposalMoney,
+  humanMoneyToMinorUnits,
+  proposalCandidateSchema,
+  summarizeMutationAction,
+} from './ledger-mutations.js';
 import type { TalliStorageBackend } from './storage-contract.js';
 import { createConfiguredTalliStore } from './storage-factory.js';
+import { MUTATION_PROPOSAL_TTL_MS } from './storage.js';
 import type {
   ConversationTurnRecord,
+  LedgerMutationOperation,
+  LedgerMutationProposal,
+  LedgerMutationProposalStatus,
   LoadedSession,
   PendingClarificationState,
   SessionState,
@@ -71,6 +86,65 @@ export interface TalliMessageResponse {
   sessionId: string;
   errorCode: string | null;
   modelAvailable: boolean;
+}
+
+export interface LedgerMutationProposalView {
+  proposalId: string;
+  operation: LedgerMutationOperation;
+  summary: string;
+  status: LedgerMutationProposalStatus;
+  createdAt: string;
+  expiresAt: string;
+  confirmedAt: string | null;
+  cancelledAt: string | null;
+}
+
+export interface LedgerMutationConfirmationRequiredResponse {
+  status: 'confirmation_required';
+  proposal: LedgerMutationProposalView;
+  message: string;
+}
+
+export interface LedgerMutationClarificationRequiredResponse {
+  status: 'clarification_required';
+  reasonCode:
+    | 'AMBIGUOUS_CUSTOMER'
+    | 'AMBIGUOUS_OBLIGATION'
+    | 'UNKNOWN_CUSTOMER'
+    | 'UNKNOWN_OBLIGATION'
+    | 'INVALID_REQUEST';
+  message: string;
+  candidates: ProposalCandidate[];
+}
+
+export interface LedgerMutationRejectedResponse {
+  status: 'rejected';
+  reasonCode: string;
+  message: string;
+}
+
+export type LedgerMutationPrepareResponse =
+  | LedgerMutationConfirmationRequiredResponse
+  | LedgerMutationClarificationRequiredResponse
+  | LedgerMutationRejectedResponse;
+
+export interface LedgerMutationCurrentResponse {
+  status: 'pending' | 'none';
+  proposal: LedgerMutationProposalView | null;
+}
+
+export interface LedgerMutationConfirmationResponse {
+  status:
+    | 'confirmed'
+    | 'already_confirmed'
+    | 'cancelled'
+    | 'already_cancelled'
+    | 'expired'
+    | 'stale'
+    | 'rejected';
+  reasonCode?: string;
+  message: string;
+  proposal: LedgerMutationProposalView | null;
 }
 
 export interface TalliServiceOptions {
@@ -363,6 +437,122 @@ function noActionMessage(action: Extract<LedgerAction, { type: 'NO_ACTION' }>): 
   return action.reason ?? 'No ledger change was made.';
 }
 
+function buildProposalView(proposal: LedgerMutationProposal): LedgerMutationProposalView {
+  return {
+    proposalId: proposal.proposalId,
+    operation: proposal.operation,
+    summary: proposal.summary,
+    status: proposal.status,
+    createdAt: proposal.createdAt,
+    expiresAt: proposal.expiresAt,
+    confirmedAt: proposal.confirmedAt,
+    cancelledAt: proposal.cancelledAt,
+  };
+}
+
+function isProposalExpired(proposal: LedgerMutationProposal, now = Date.now()): boolean {
+  return new Date(proposal.expiresAt).getTime() <= now;
+}
+
+function isProposalFingerprintStale(
+  proposal: LedgerMutationProposal,
+  snapshot: LedgerSnapshot,
+  revision: number,
+): boolean {
+  return (
+    proposal.ledgerRevision !== revision ||
+    proposal.ledgerFingerprint !== computeLedgerFingerprint(snapshot)
+  );
+}
+
+function buildClarificationCandidates(
+  clarification: NonNullable<ReturnType<typeof applyLedgerAction>['clarification']>,
+  snapshot: LedgerSnapshot,
+): ProposalCandidate[] {
+  const candidates: ProposalCandidate[] = [];
+
+  for (const customerId of clarification.candidateCustomerIds) {
+    const customer = snapshot.customers.find((entry) => entry.id === customerId);
+    if (!customer) {
+      continue;
+    }
+    candidates.push(
+      proposalCandidateSchema.parse({
+        kind: 'customer',
+        id: customer.id,
+        displayName: customer.displayName,
+      }),
+    );
+  }
+
+  for (const obligationId of clarification.candidateObligationIds) {
+    const obligation = snapshot.obligations.find((entry) => entry.id === obligationId);
+    if (!obligation) {
+      continue;
+    }
+    candidates.push(
+      proposalCandidateSchema.parse({
+        kind: 'obligation',
+        id: obligation.id,
+        displayName: `${obligation.customerName} ${formatProposalMoney(
+          obligation.outstandingMinor,
+          snapshot.currency,
+        )} remaining`,
+      }),
+    );
+  }
+
+  return candidates;
+}
+
+function classifyClarification(
+  clarification: NonNullable<ReturnType<typeof applyLedgerAction>['clarification']>,
+  reason?: string,
+): {
+  status: 'clarification_required' | 'rejected';
+  reasonCode:
+    | 'AMBIGUOUS_CUSTOMER'
+    | 'AMBIGUOUS_OBLIGATION'
+    | 'UNKNOWN_CUSTOMER'
+    | 'UNKNOWN_OBLIGATION'
+    | 'INVALID_REQUEST';
+} {
+  const hint = `${reason ?? ''} ${clarification.question}`.toLowerCase();
+
+  if (clarification.candidateCustomerIds.length > 0) {
+    return {
+      status: 'clarification_required',
+      reasonCode: 'AMBIGUOUS_CUSTOMER',
+    };
+  }
+
+  if (clarification.candidateObligationIds.length > 0) {
+    return {
+      status: 'clarification_required',
+      reasonCode: 'AMBIGUOUS_OBLIGATION',
+    };
+  }
+
+  if (hint.includes('customer')) {
+    return {
+      status: 'rejected',
+      reasonCode: 'UNKNOWN_CUSTOMER',
+    };
+  }
+
+  if (hint.includes('obligation') || hint.includes('debt') || hint.includes('payment')) {
+    return {
+      status: 'rejected',
+      reasonCode: 'UNKNOWN_OBLIGATION',
+    };
+  }
+
+  return {
+    status: 'rejected',
+    reasonCode: 'INVALID_REQUEST',
+  };
+}
+
 function findResultObligation(
   action: LedgerAction,
   snapshotAfter: LedgerSnapshot,
@@ -384,6 +574,7 @@ export class TalliService {
   readonly store: TalliStorageBackend;
   readonly interpreter: ActionInterpreter | null;
   private readonly telegramNotifier: TelegramConfirmationTransport | null;
+  private readonly sessionMutationQueues = new Map<string, Promise<void>>();
 
   constructor(options: TalliServiceOptions = {}) {
     this.store =
@@ -399,6 +590,25 @@ export class TalliService {
       return null;
     }
     return new AdvancedInterpreter(model);
+  }
+
+  private async withSessionMutationLock<T>(sessionId: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.sessionMutationQueues.get(sessionId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.catch(() => undefined).then(() => current);
+    this.sessionMutationQueues.set(sessionId, tail);
+    await previous.catch(() => undefined);
+    try {
+      return await task();
+    } finally {
+      release();
+      if (this.sessionMutationQueues.get(sessionId) === tail) {
+        this.sessionMutationQueues.delete(sessionId);
+      }
+    }
   }
 
   async loadSession(sessionId?: string): Promise<LoadedSession> {
@@ -447,6 +657,436 @@ export class TalliService {
 
   async setPreferredCurrency(sessionId: string, currency: string): Promise<void> {
     await this.store.setPreferredCurrency(sessionId, currency);
+  }
+
+  async prepareLedgerMutation(
+    sessionId: string,
+    input: PrepareLedgerMutationRequest,
+  ): Promise<LedgerMutationPrepareResponse> {
+    return this.withSessionMutationLock(sessionId, async () => {
+      const loaded = await this.store.load(sessionId);
+      const snapshot = projectLedger(loaded.document);
+
+      let action: ProposalAction;
+      try {
+        action = this.buildLedgerMutationAction(input, snapshot);
+      } catch (error) {
+        return {
+          status: 'rejected',
+          reasonCode: 'INVALID_REQUEST',
+          message: error instanceof Error ? error.message : 'Invalid mutation request.',
+        };
+      }
+
+      const dryRun = applyLedgerAction(cloneLedgerDocument(loaded.document), action, {
+        now: new Date(),
+        actor: 'system',
+        turnId: randomUUID(),
+        sourceText: 'prepare_ledger_mutation',
+      });
+
+      assertLedgerInvariants(dryRun.snapshot);
+
+      if (dryRun.clarification) {
+        const classification = classifyClarification(dryRun.clarification, dryRun.reason);
+        if (classification.status === 'clarification_required') {
+          return {
+            status: 'clarification_required',
+            reasonCode: classification.reasonCode,
+            message: dryRun.clarification.question,
+            candidates: buildClarificationCandidates(dryRun.clarification, snapshot),
+          };
+        }
+
+        return {
+          status: 'rejected',
+          reasonCode: classification.reasonCode,
+          message: dryRun.reason ?? dryRun.clarification.question,
+        };
+      }
+
+      if (!dryRun.applied) {
+        return {
+          status: 'rejected',
+          reasonCode: 'INVALID_REQUEST',
+          message: dryRun.reason ?? 'Unable to prepare that mutation safely.',
+        };
+      }
+
+      const proposalId = randomUUID();
+      const createdAt = new Date().toISOString();
+      const proposal: LedgerMutationProposal = {
+        proposalId,
+        sessionId,
+        operation: action.type,
+        action,
+        summary: summarizeMutationAction(action, dryRun.snapshot),
+        status: 'pending',
+        createdAt,
+        expiresAt: new Date(Date.now() + MUTATION_PROPOSAL_TTL_MS).toISOString(),
+        confirmedAt: null,
+        cancelledAt: null,
+        ledgerRevision: loaded.document.events.length,
+        ledgerFingerprint: computeLedgerFingerprint(snapshot),
+      };
+
+      const nextState: SessionState = {
+        ...loaded.state,
+        ledgerMutationProposal: proposal,
+        updatedAt: createdAt,
+      };
+
+      await this.store.saveState(loaded.statePath, nextState);
+
+      return {
+        status: 'confirmation_required',
+        proposal: buildProposalView(proposal),
+        message: `Review this proposal before confirming: ${proposal.summary}`,
+      };
+    });
+  }
+
+  async getPendingLedgerMutation(sessionId: string): Promise<LedgerMutationProposalView | null> {
+    const loaded = await this.store.load(sessionId);
+    const proposal = loaded.state.ledgerMutationProposal;
+    if (!proposal || proposal.sessionId !== sessionId || proposal.status !== 'pending') {
+      return null;
+    }
+
+    if (isProposalExpired(proposal)) {
+      return null;
+    }
+
+    const snapshot = projectLedger(loaded.document);
+    if (isProposalFingerprintStale(proposal, snapshot, loaded.document.events.length)) {
+      return null;
+    }
+
+    return buildProposalView(proposal);
+  }
+
+  async confirmLedgerMutation(
+    sessionId: string,
+    proposalId: string,
+  ): Promise<LedgerMutationConfirmationResponse> {
+    return this.withSessionMutationLock(sessionId, async () => {
+      const loaded = await this.store.load(sessionId);
+      const proposal = loaded.state.ledgerMutationProposal;
+      if (!proposal || proposal.sessionId !== sessionId || proposal.proposalId !== proposalId) {
+        return {
+          status: 'rejected',
+          reasonCode: 'PROPOSAL_NOT_FOUND',
+          message: 'No matching proposal exists for this session.',
+          proposal: null,
+        };
+      }
+
+      const proposalView = buildProposalView(proposal);
+      if (proposal.status === 'confirmed') {
+        return {
+          status: 'already_confirmed',
+          message: 'This proposal was already confirmed.',
+          proposal: proposalView,
+        };
+      }
+      if (proposal.status === 'cancelled') {
+        return {
+          status: 'cancelled',
+          message: 'This proposal was cancelled before confirmation.',
+          proposal: proposalView,
+        };
+      }
+      if (proposal.status === 'expired') {
+        return {
+          status: 'expired',
+          message: 'This proposal expired before it could be confirmed.',
+          proposal: proposalView,
+        };
+      }
+      if (proposal.status === 'stale') {
+        return {
+          status: 'stale',
+          message: 'The ledger changed after this proposal was prepared.',
+          proposal: proposalView,
+        };
+      }
+
+      if (isProposalExpired(proposal)) {
+        const nextState: SessionState = {
+          ...loaded.state,
+          ledgerMutationProposal: {
+            ...proposal,
+            status: 'expired',
+          },
+          updatedAt: new Date().toISOString(),
+        };
+        await this.store.saveState(loaded.statePath, nextState);
+        return {
+          status: 'expired',
+          message: 'This proposal expired before it could be confirmed.',
+          proposal: buildProposalView({
+            ...proposal,
+            status: 'expired',
+          }),
+        };
+      }
+
+      if (loaded.document.events.some((event) => event.turnId === proposalId)) {
+        const nextState: SessionState = {
+          ...loaded.state,
+          ledgerMutationProposal: {
+            ...proposal,
+            status: 'confirmed',
+            confirmedAt: proposal.confirmedAt ?? new Date().toISOString(),
+          },
+          updatedAt: new Date().toISOString(),
+        };
+        await this.store.saveState(loaded.statePath, nextState);
+        return {
+          status: 'already_confirmed',
+          message: 'This proposal was already confirmed.',
+          proposal: buildProposalView({
+            ...proposal,
+            status: 'confirmed',
+            confirmedAt: proposal.confirmedAt ?? new Date().toISOString(),
+          }),
+        };
+      }
+
+      const snapshot = projectLedger(loaded.document);
+      if (isProposalFingerprintStale(proposal, snapshot, loaded.document.events.length)) {
+        const nextState: SessionState = {
+          ...loaded.state,
+          ledgerMutationProposal: {
+            ...proposal,
+            status: 'stale',
+          },
+          updatedAt: new Date().toISOString(),
+        };
+        await this.store.saveState(loaded.statePath, nextState);
+        return {
+          status: 'stale',
+          message: 'The ledger changed after this proposal was prepared.',
+          proposal: buildProposalView({
+            ...proposal,
+            status: 'stale',
+          }),
+        };
+      }
+
+      const result = applyLedgerAction(cloneLedgerDocument(loaded.document), proposal.action, {
+        now: new Date(),
+        actor: 'system',
+        turnId: proposalId,
+        sourceText: 'proposal_confirmation',
+      });
+
+      assertLedgerInvariants(result.snapshot);
+
+      const confirmedAt = new Date().toISOString();
+      const nextState: SessionState = {
+        ...loaded.state,
+        ledgerCurrency: result.snapshot.currency,
+        preferredCurrency: result.snapshot.currency,
+        ledgerMutationProposal: {
+          ...proposal,
+          status: 'confirmed',
+          confirmedAt,
+        },
+        updatedAt: confirmedAt,
+      };
+
+      await this.store.save({
+        document: result.document,
+        state: nextState,
+        ledgerPath: loaded.ledgerPath,
+        statePath: loaded.statePath,
+      });
+
+      return {
+        status: 'confirmed',
+        message: `Confirmed: ${proposal.summary}`,
+        proposal: buildProposalView({
+          ...proposal,
+          status: 'confirmed',
+          confirmedAt,
+        }),
+      };
+    });
+  }
+
+  async cancelLedgerMutation(
+    sessionId: string,
+    proposalId: string,
+  ): Promise<LedgerMutationConfirmationResponse> {
+    return this.withSessionMutationLock(sessionId, async () => {
+      const loaded = await this.store.load(sessionId);
+      const proposal = loaded.state.ledgerMutationProposal;
+      if (!proposal || proposal.sessionId !== sessionId || proposal.proposalId !== proposalId) {
+        return {
+          status: 'rejected',
+          reasonCode: 'PROPOSAL_NOT_FOUND',
+          message: 'No matching proposal exists for this session.',
+          proposal: null,
+        };
+      }
+
+      const proposalView = buildProposalView(proposal);
+      if (proposal.status === 'confirmed') {
+        return {
+          status: 'already_confirmed',
+          message: 'This proposal was already confirmed and cannot be cancelled.',
+          proposal: proposalView,
+        };
+      }
+      if (proposal.status === 'cancelled') {
+        return {
+          status: 'already_cancelled',
+          message: 'This proposal was already cancelled.',
+          proposal: proposalView,
+        };
+      }
+      if (proposal.status === 'expired') {
+        return {
+          status: 'expired',
+          message: 'This proposal expired before cancellation.',
+          proposal: proposalView,
+        };
+      }
+      if (proposal.status === 'stale') {
+        return {
+          status: 'stale',
+          message: 'This proposal became stale before cancellation.',
+          proposal: proposalView,
+        };
+      }
+
+      const snapshot = projectLedger(loaded.document);
+      if (isProposalExpired(proposal)) {
+        const nextState: SessionState = {
+          ...loaded.state,
+          ledgerMutationProposal: {
+            ...proposal,
+            status: 'expired',
+          },
+          updatedAt: new Date().toISOString(),
+        };
+        await this.store.saveState(loaded.statePath, nextState);
+        return {
+          status: 'expired',
+          message: 'This proposal expired before cancellation.',
+          proposal: buildProposalView({
+            ...proposal,
+            status: 'expired',
+          }),
+        };
+      }
+
+      if (isProposalFingerprintStale(proposal, snapshot, loaded.document.events.length)) {
+        const nextState: SessionState = {
+          ...loaded.state,
+          ledgerMutationProposal: {
+            ...proposal,
+            status: 'stale',
+          },
+          updatedAt: new Date().toISOString(),
+        };
+        await this.store.saveState(loaded.statePath, nextState);
+        return {
+          status: 'stale',
+          message: 'This proposal became stale before cancellation.',
+          proposal: buildProposalView({
+            ...proposal,
+            status: 'stale',
+          }),
+        };
+      }
+
+      const cancelledAt = new Date().toISOString();
+      const nextState: SessionState = {
+        ...loaded.state,
+        ledgerMutationProposal: {
+          ...proposal,
+          status: 'cancelled',
+          cancelledAt,
+        },
+        updatedAt: cancelledAt,
+      };
+
+      await this.store.saveState(loaded.statePath, nextState);
+
+      return {
+        status: 'cancelled',
+        message: 'Proposal cancelled.',
+        proposal: buildProposalView({
+          ...proposal,
+          status: 'cancelled',
+          cancelledAt,
+        }),
+      };
+    });
+  }
+
+  private buildLedgerMutationAction(
+    input: PrepareLedgerMutationRequest,
+    snapshot: LedgerSnapshot,
+  ): ProposalAction {
+    const requestedCurrency =
+      'amount' in input && input.amount ? input.amount.currency.toUpperCase() : snapshot.currency;
+
+    if (requestedCurrency !== snapshot.currency.toUpperCase()) {
+      throw new Error(
+        `This ledger is using ${snapshot.currency}, but the request used ${requestedCurrency}.`,
+      );
+    }
+
+    switch (input.operation) {
+      case 'CREATE_OBLIGATION': {
+        if (input.customer.kind === 'name' && input.customer.allowCreate) {
+          throw new Error('New customers must use customer.kind = "new".');
+        }
+
+        return ledgerActionSchema.parse({
+          type: 'CREATE_OBLIGATION',
+          customer: input.customer,
+          amountMinor: humanMoneyToMinorUnits(input.amount),
+          dueAt: input.dueAt ?? undefined,
+          permittedMutation: true,
+          evidence: [],
+        }) as ProposalAction;
+      }
+      case 'RECORD_PAYMENT': {
+        if (input.settleRemaining && input.amount) {
+          throw new Error('Record payment requests must omit amount when settleRemaining is true.');
+        }
+
+        if (input.customer?.kind === 'name' && input.customer.allowCreate) {
+          throw new Error('Payment requests must resolve to an existing customer.');
+        }
+
+        return ledgerActionSchema.parse({
+          type: 'RECORD_PAYMENT',
+          customer: input.customer,
+          obligation: input.obligation,
+          amountMinor: input.amount ? humanMoneyToMinorUnits(input.amount) : undefined,
+          settleRemaining: input.settleRemaining,
+          permittedMutation: true,
+          evidence: [],
+        }) as ProposalAction;
+      }
+      case 'SETTLE_OBLIGATION': {
+        return ledgerActionSchema.parse({
+          type: 'SETTLE_OBLIGATION',
+          obligation: input.obligation,
+          amountMinor: input.amount ? humanMoneyToMinorUnits(input.amount) : undefined,
+          permittedMutation: true,
+          evidence: [],
+        }) as ProposalAction;
+      }
+      default: {
+        throw new Error('Unsupported proposal operation.');
+      }
+    }
   }
 
   async getLedger(sessionId?: string): Promise<LedgerSnapshot> {

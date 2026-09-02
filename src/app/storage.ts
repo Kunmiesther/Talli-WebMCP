@@ -1,7 +1,34 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import type { LedgerAction } from '../domain/actions.js';
 import { type LedgerDocument, type LedgerEvent, createLedgerDocument } from '../domain/ledger.js';
+
+export const MUTATION_PROPOSAL_TTL_MS = 10 * 60 * 1000;
+
+export type LedgerMutationProposalStatus =
+  | 'pending'
+  | 'confirmed'
+  | 'cancelled'
+  | 'expired'
+  | 'stale';
+
+export type LedgerMutationOperation = 'CREATE_OBLIGATION' | 'RECORD_PAYMENT' | 'SETTLE_OBLIGATION';
+
+export interface LedgerMutationProposal {
+  proposalId: string;
+  sessionId: string;
+  operation: LedgerMutationOperation;
+  action: LedgerAction;
+  summary: string;
+  status: LedgerMutationProposalStatus;
+  createdAt: string;
+  expiresAt: string;
+  confirmedAt: string | null;
+  cancelledAt: string | null;
+  ledgerRevision: number;
+  ledgerFingerprint: string;
+}
 
 export interface PendingClarificationState {
   turnId: string;
@@ -47,6 +74,7 @@ export interface SessionState {
   timezone: string;
   recentTurns: ConversationTurnRecord[];
   pendingClarification: PendingClarificationState | null;
+  ledgerMutationProposal: LedgerMutationProposal | null;
   demoSeededAt: string | null;
 }
 
@@ -155,7 +183,48 @@ function defaultState(sessionId: string, timezone: string): SessionState {
     timezone,
     recentTurns: [],
     pendingClarification: null,
+    ledgerMutationProposal: null,
     demoSeededAt: null,
+  };
+}
+
+function normalizeLedgerMutationProposal(
+  proposal: LedgerMutationProposal | null | undefined,
+  sessionId: string,
+): LedgerMutationProposal | null {
+  if (!proposal) {
+    return null;
+  }
+
+  return {
+    ...proposal,
+    sessionId: proposal.sessionId || sessionId,
+    confirmedAt: proposal.confirmedAt ?? null,
+    cancelledAt: proposal.cancelledAt ?? null,
+  };
+}
+
+function normalizeSessionState(
+  state: SessionState,
+  sessionId: string,
+  timezone: string,
+): SessionState {
+  return {
+    ...defaultState(sessionId, timezone),
+    ...state,
+    sessionId,
+    userId: state.userId ?? sessionId,
+    ledgerId: state.ledgerId || sessionId,
+    ledgerCurrency: state.ledgerCurrency ?? state.preferredCurrency ?? 'NGN',
+    preferredCurrency: state.preferredCurrency ?? state.ledgerCurrency ?? 'NGN',
+    timezone: state.timezone || timezone,
+    recentTurns: state.recentTurns ?? [],
+    pendingClarification: state.pendingClarification ?? null,
+    ledgerMutationProposal: normalizeLedgerMutationProposal(
+      state.ledgerMutationProposal,
+      sessionId,
+    ),
+    demoSeededAt: state.demoSeededAt ?? null,
   };
 }
 
@@ -276,15 +345,7 @@ export class TalliSessionStore {
   }
 
   private ensureStateIdentity(state: SessionState, sessionId: string): SessionState {
-    return {
-      ...state,
-      sessionId,
-      userId: state.userId ?? sessionId,
-      ledgerId: state.ledgerId || sessionId,
-      ledgerCurrency: state.ledgerCurrency ?? state.preferredCurrency ?? 'NGN',
-      preferredCurrency: state.preferredCurrency ?? state.ledgerCurrency ?? 'NGN',
-      timezone: state.timezone || this.timezone,
-    };
+    return normalizeSessionState(state, sessionId, this.timezone);
   }
 
   async load(sessionId = this.defaultSessionId): Promise<LoadedSession> {
@@ -393,6 +454,8 @@ export class TalliSessionStore {
       updatedAt: new Date().toISOString(),
       recentTurns: seed.state?.recentTurns ?? [],
       pendingClarification: seed.state?.pendingClarification ?? null,
+      ledgerMutationProposal:
+        normalizeLedgerMutationProposal(seed.state?.ledgerMutationProposal, sessionId) ?? null,
       demoSeededAt: seed.state?.demoSeededAt ?? new Date().toISOString(),
     };
     const nextDocument = {

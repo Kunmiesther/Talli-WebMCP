@@ -21,6 +21,8 @@ describe('static frontend serving', () => {
       const rootResponse = await handleTalliApiRequest(service, new Request('http://localhost/'));
       expect(rootResponse.status).toBe(200);
       expect(rootResponse.headers.get('content-type')).toContain('text/html');
+      expect(rootResponse.headers.get('origin-agent-cluster')).toBe('?1');
+      expect(rootResponse.headers.get('permissions-policy')).toBe('tools=(self)');
       const rootHtml = await rootResponse.text();
       expect(rootHtml).toContain('Talli');
       expect(rootHtml).not.toContain('Seed demo');
@@ -44,6 +46,8 @@ describe('static frontend serving', () => {
       );
       expect(cssResponse.status).toBe(200);
       expect(cssResponse.headers.get('content-type')).toContain('text/css');
+      expect(cssResponse.headers.get('origin-agent-cluster')).toBe('?1');
+      expect(cssResponse.headers.get('permissions-policy')).toBe('tools=(self)');
 
       const jsResponse = await handleTalliApiRequest(
         service,
@@ -89,6 +93,8 @@ describe('static frontend serving', () => {
       );
       expect(healthResponse.status).toBe(200);
       expect(healthResponse.headers.get('content-type')).toContain('application/json');
+      expect(healthResponse.headers.get('origin-agent-cluster')).toBe('?1');
+      expect(healthResponse.headers.get('permissions-policy')).toBe('tools=(self)');
       expect(await healthResponse.json()).toMatchObject({ ok: true });
 
       const ledgerResponse = await handleTalliApiRequest(

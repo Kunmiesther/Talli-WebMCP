@@ -40,6 +40,7 @@ function defaultState(sessionId: string, timezone: string): SessionState {
     timezone,
     recentTurns: [],
     pendingClarification: null,
+    ledgerMutationProposal: null,
     demoSeededAt: null,
   };
 }
@@ -235,7 +236,20 @@ export class SupabaseTalliSessionStore implements TalliStorageBackend {
     document.events = eventRows.map((row) => row.event_json as LedgerEvent);
     return {
       document,
-      state,
+      state: {
+        ...defaultState(sessionId, this.timezone),
+        ...state,
+        sessionId,
+        userId: state.userId ?? sessionId,
+        ledgerId: state.ledgerId || sessionId,
+        ledgerCurrency: state.ledgerCurrency ?? state.preferredCurrency ?? 'NGN',
+        preferredCurrency: state.preferredCurrency ?? state.ledgerCurrency ?? 'NGN',
+        timezone: state.timezone || this.timezone,
+        recentTurns: state.recentTurns ?? [],
+        pendingClarification: state.pendingClarification ?? null,
+        ledgerMutationProposal: state.ledgerMutationProposal ?? null,
+        demoSeededAt: state.demoSeededAt ?? null,
+      },
       ledgerPath: this.ledgerPathFor(sessionId),
       statePath: this.statePathFor(sessionId),
     };
@@ -349,6 +363,9 @@ export class SupabaseTalliSessionStore implements TalliStorageBackend {
         seed.document.currency ??
         'NGN',
       updatedAt: new Date().toISOString(),
+      recentTurns: seed.state?.recentTurns ?? [],
+      pendingClarification: seed.state?.pendingClarification ?? null,
+      ledgerMutationProposal: seed.state?.ledgerMutationProposal ?? null,
     };
     await this.save({
       document: {

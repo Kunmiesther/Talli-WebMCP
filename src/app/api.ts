@@ -9,6 +9,10 @@ import {
 } from '../integrations/telegram/config.js';
 import type { TelegramConversationService } from '../integrations/telegram/telegram-service.js';
 import type { TelegramUpdate } from '../integrations/telegram/types.js';
+import {
+  prepareLedgerMutationRequestSchema,
+  proposalMutationRequestSchema,
+} from './ledger-mutations.js';
 import type { TalliMessageInput, TalliService } from './talli-service.js';
 
 export interface TalliApiResponse<T = unknown> {
@@ -29,12 +33,18 @@ async function readJsonBody(request: Request): Promise<unknown> {
   return JSON.parse(text) as unknown;
 }
 
+const SAME_ORIGIN_RESPONSE_HEADERS = {
+  'Origin-Agent-Cluster': '?1',
+  'Permissions-Policy': 'tools=(self)',
+};
+
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body, null, 2), {
     status,
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'no-store',
+      ...SAME_ORIGIN_RESPONSE_HEADERS,
     },
   });
 }
@@ -164,6 +174,7 @@ async function readStaticFile(filePath: string): Promise<Response | null> {
       headers: {
         'Cache-Control': 'no-store',
         'Content-Type': contentTypeForPath(filePath),
+        ...SAME_ORIGIN_RESPONSE_HEADERS,
       },
     });
   } catch (error) {
@@ -267,6 +278,94 @@ async function routeRequest(
       sessionId,
       preferredCurrency: body.currency.trim().toUpperCase(),
     });
+  }
+
+  if (request.method === 'GET' && url.pathname === '/api/proposals/current') {
+    const sessionId = await resolveSessionId(service, request);
+    const proposal = await service.getPendingLedgerMutation(sessionId);
+    return jsonResponse(200, {
+      status: proposal ? 'pending' : 'none',
+      proposal,
+    });
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/proposals/prepare') {
+    let body: unknown;
+    try {
+      body = await readJsonBody(request);
+    } catch {
+      return jsonResponse(400, {
+        status: 'error',
+        errorCode: 'BAD_REQUEST',
+        message: 'Invalid proposal payload.',
+      });
+    }
+
+    const parsed = prepareLedgerMutationRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      return jsonResponse(400, {
+        status: 'error',
+        errorCode: 'BAD_REQUEST',
+        message: 'Invalid proposal payload.',
+      });
+    }
+
+    const sessionId = await resolveSessionId(service, request);
+    return jsonResponse(200, await service.prepareLedgerMutation(sessionId, parsed.data));
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/proposals/confirm') {
+    // This confirmation endpoint is for the visible first-party Talli UI, not a WebMCP tool.
+    let body: unknown;
+    try {
+      body = await readJsonBody(request);
+    } catch {
+      return jsonResponse(400, {
+        status: 'error',
+        errorCode: 'BAD_REQUEST',
+        message: 'Invalid proposal payload.',
+      });
+    }
+
+    const parsed = proposalMutationRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      return jsonResponse(400, {
+        status: 'error',
+        errorCode: 'BAD_REQUEST',
+        message: 'Invalid proposal payload.',
+      });
+    }
+
+    const sessionId = await resolveSessionId(service, request);
+    return jsonResponse(
+      200,
+      await service.confirmLedgerMutation(sessionId, parsed.data.proposalId),
+    );
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/proposals/cancel') {
+    let body: unknown;
+    try {
+      body = await readJsonBody(request);
+    } catch {
+      return jsonResponse(400, {
+        status: 'error',
+        errorCode: 'BAD_REQUEST',
+        message: 'Invalid proposal payload.',
+      });
+    }
+
+    const parsed = proposalMutationRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      return jsonResponse(400, {
+        status: 'error',
+        errorCode: 'BAD_REQUEST',
+        message: 'Invalid proposal payload.',
+      });
+    }
+
+    const sessionId = await resolveSessionId(service, request);
+    return jsonResponse(200, await service.cancelLedgerMutation(sessionId, parsed.data.proposalId));
   }
 
   if (request.method === 'POST' && url.pathname === '/api/auth/telegram/link-token') {
