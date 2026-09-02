@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: talli-webmcp
+    env: node
+    # Keep this service at one instance. Proposal confirmation is serialized in-process.
+    buildCommand: npm run build
+    startCommand: npm run start
+    healthCheckPath: /api/health
+    envVars:
+      - key: TALLI_STORAGE_DRIVER
+        value: supabase
