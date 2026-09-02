@@ -1,8 +1,20 @@
+import {
+  appendProposalActivity,
+  beginProposalAction,
+  createProposalWorkbenchState,
+  finishProposalAction,
+  formatConfirmStateMessage,
+  withCurrentProposal,
+  withProposalOutcome,
+} from './proposal-workbench.js';
+import { abortTalliWebMcpTools, registerTalliWebMcpTools } from './webmcp-tools.js';
+
 const DEMO_SESSION_ID = 'default';
 const TIMEZONE = 'Africa/Lagos';
 const STORAGE_KEYS = {
   conversation: 'talli:conversation',
   selectedCustomer: 'talli:selectedCustomer',
+  collaboration: 'talli:collaboration',
 };
 
 const DEFAULT_WORKSPACE_NOTE =
@@ -57,6 +69,10 @@ const state = {
   selectedCustomerId: loadStoredJson(STORAGE_KEYS.selectedCustomer, null),
   conversation: loadStoredJson(STORAGE_KEYS.conversation, []),
   clarification: null,
+  proposalPanel: {
+    ...createProposalWorkbenchState(),
+    activity: loadStoredJson(STORAGE_KEYS.collaboration, []),
+  },
   transcriptPreview: '',
   pendingSubmission: null,
   telegramDisconnectOpen: false,
@@ -815,6 +831,159 @@ function renderNotice() {
   dom.workspaceNote.textContent = state.notice || DEFAULT_WORKSPACE_NOTE;
 }
 
+function renderProposalReview() {
+  if (
+    !dom.proposalPanel ||
+    !dom.proposalHeadline ||
+    !dom.proposalStatus ||
+    !dom.proposalSummary ||
+    !dom.proposalMessage ||
+    !dom.proposalOperation ||
+    !dom.proposalExpires ||
+    !dom.proposalCandidates ||
+    !dom.proposalConfirm ||
+    !dom.proposalCancel ||
+    !dom.proposalLive
+  ) {
+    return;
+  }
+
+  const proposal = state.proposalPanel.activeProposal;
+  const overlay = state.proposalPanel.overlay;
+  const hasProposal = Boolean(proposal);
+  const hasOverlay = Boolean(overlay);
+
+  dom.proposalPanel.hidden = !hasProposal && !hasOverlay;
+  if (!hasProposal && !hasOverlay) {
+    dom.proposalHeadline.textContent = 'Agent prepared a ledger change';
+    dom.proposalStatus.textContent = 'Waiting for review';
+    dom.proposalSummary.textContent = '';
+    dom.proposalMessage.textContent = '';
+    dom.proposalOperation.textContent = '';
+    dom.proposalExpires.textContent = '';
+    dom.proposalCandidates.innerHTML = '';
+    dom.proposalConfirm.hidden = false;
+    dom.proposalCancel.hidden = false;
+    dom.proposalConfirm.disabled = false;
+    dom.proposalCancel.disabled = false;
+    dom.proposalLive.textContent = '';
+    return;
+  }
+
+  const overlayStatus = overlay?.status ?? null;
+  const activeTitle =
+    overlayStatus === 'clarification_required'
+      ? 'Clarification required'
+      : overlayStatus === 'rejected'
+        ? 'Could not prepare a ledger change'
+        : overlayStatus === 'confirmed' || overlayStatus === 'already_confirmed'
+          ? 'Ledger change confirmed'
+          : overlayStatus === 'cancelled' || overlayStatus === 'already_cancelled'
+            ? 'Proposal cancelled'
+            : overlayStatus === 'expired'
+              ? 'Proposal expired'
+              : overlayStatus === 'stale'
+                ? 'Proposal became stale'
+                : 'Agent prepared a ledger change';
+
+  dom.proposalHeadline.textContent = activeTitle;
+  dom.proposalStatus.textContent =
+    overlayStatus === 'clarification_required'
+      ? 'No mutation yet'
+      : overlayStatus === 'rejected'
+        ? 'No change'
+        : overlayStatus === 'confirmed' || overlayStatus === 'already_confirmed'
+          ? 'Confirmed by you'
+          : overlayStatus === 'cancelled' || overlayStatus === 'already_cancelled'
+            ? 'Cancelled'
+            : overlayStatus === 'expired'
+              ? 'Expired'
+              : overlayStatus === 'stale'
+                ? 'Stale'
+                : hasProposal
+                  ? 'Awaiting your decision'
+                  : 'Review';
+
+  dom.proposalSummary.textContent =
+    proposal?.summary ??
+    overlay?.message ??
+    'Talli is showing the safe result of the latest browser-agent action.';
+
+  dom.proposalMessage.textContent =
+    overlayStatus === 'clarification_required'
+      ? 'Talli did not guess. No ledger change occurred.'
+      : overlayStatus === 'rejected'
+        ? (overlay?.message ?? 'No ledger change occurred.')
+        : hasProposal
+          ? 'The ledger has not changed yet.'
+          : (overlay?.message ?? '');
+
+  dom.proposalOperation.textContent = proposal ? actionLabel(proposal.operation) : '';
+  dom.proposalExpires.textContent = proposal?.expiresAt
+    ? `Expires ${formatDateTime(proposal.expiresAt)}`
+    : '';
+
+  dom.proposalCandidates.innerHTML = '';
+  if (overlayStatus === 'clarification_required' && overlay?.candidates?.length) {
+    dom.proposalCandidates.innerHTML = overlay.candidates
+      .map((candidate) => {
+        const details = [];
+        if (candidate.aliases?.length) {
+          details.push(candidate.aliases.join(', '));
+        }
+        if (typeof candidate.outstandingMinor === 'number') {
+          details.push(formatMoney(candidate.outstandingMinor));
+        }
+        return `
+          <div class="proposal-candidate">
+            <strong>${escapeHtml(candidate.displayName)}</strong>
+            <span>${escapeHtml(details.length ? details.join(' · ') : 'Possible match')}</span>
+          </div>
+        `;
+      })
+      .join('');
+  }
+
+  const actionable = Boolean(proposal && proposal.status === 'pending');
+  const busy = state.proposalPanel.busyAction !== null;
+  dom.proposalConfirm.hidden = !actionable;
+  dom.proposalCancel.hidden = !actionable;
+  dom.proposalConfirm.disabled = !actionable || busy;
+  dom.proposalCancel.disabled = !actionable || busy;
+  dom.proposalConfirm.textContent =
+    busy && state.proposalPanel.busyAction === 'confirm' ? 'Confirming...' : 'Confirm';
+  dom.proposalCancel.textContent =
+    busy && state.proposalPanel.busyAction === 'cancel' ? 'Cancelling...' : 'Cancel';
+  dom.proposalLive.textContent = state.proposalPanel.liveMessage || dom.proposalMessage.textContent;
+}
+
+function renderCollaborationActivity() {
+  if (!dom.collaborationFeed || !dom.collaborationEmpty || !dom.collaborationCount) {
+    return;
+  }
+
+  const items = state.proposalPanel.activity ?? [];
+  dom.collaborationCount.textContent = `${items.length} update${items.length === 1 ? '' : 's'}`;
+  if (items.length === 0) {
+    dom.collaborationFeed.innerHTML = '';
+    dom.collaborationEmpty.hidden = false;
+    return;
+  }
+
+  dom.collaborationEmpty.hidden = true;
+  dom.collaborationFeed.innerHTML = items
+    .slice(-4)
+    .map(
+      (item) => `
+        <article class="activity-item">
+          <span class="activity-item__copy">${escapeHtml(item.message)}</span>
+          <time class="activity-item__time">${escapeHtml(formatDateTime(item.timestamp))}</time>
+        </article>
+      `,
+    )
+    .join('');
+}
+
 function renderAccountCard() {
   if (!dom.accountStatus || !dom.connectTelegramButton || !dom.telegramLink) {
     return;
@@ -899,6 +1068,8 @@ function renderAll() {
   renderCustomerDetail();
   renderComposerState();
   renderNotice();
+  renderProposalReview();
+  renderCollaborationActivity();
   renderAccountCard();
   renderTelegramDisconnectModal();
   if (dom.currencySelect) {
@@ -908,6 +1079,7 @@ function renderAll() {
   }
   saveStoredJson(STORAGE_KEYS.conversation, state.conversation);
   saveStoredJson(STORAGE_KEYS.selectedCustomer, state.selectedCustomerId);
+  saveStoredJson(STORAGE_KEYS.collaboration, state.proposalPanel.activity);
 }
 
 function setNotice(message) {
@@ -920,18 +1092,77 @@ function clearNotice() {
   dom.workspaceNote.textContent = DEFAULT_WORKSPACE_NOTE;
 }
 
+function appendActivityMessage(message) {
+  state.proposalPanel = {
+    ...state.proposalPanel,
+    activity: appendProposalActivity(state.proposalPanel.activity ?? [], {
+      message,
+    }),
+  };
+  saveStoredJson(STORAGE_KEYS.collaboration, state.proposalPanel.activity);
+  renderCollaborationActivity();
+}
+
+function applyProposalOutcome(outcome) {
+  state.proposalPanel = withProposalOutcome(state.proposalPanel, outcome);
+  saveStoredJson(STORAGE_KEYS.collaboration, state.proposalPanel.activity);
+  renderProposalReview();
+}
+
+function setCurrentProposal(proposal) {
+  state.proposalPanel = withCurrentProposal(state.proposalPanel, proposal);
+  renderProposalReview();
+}
+
+async function loadCurrentProposal() {
+  try {
+    const current = await api.proposalCurrent();
+    if (current.status === 'pending' && current.proposal) {
+      setCurrentProposal(current.proposal);
+      return;
+    }
+
+    state.proposalPanel = {
+      ...state.proposalPanel,
+      activeProposal: null,
+      busyAction: null,
+    };
+    renderProposalReview();
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+async function refreshLedgerAndSelection() {
+  await refreshLedgerData();
+  await loadCurrentProposal();
+  renderAll();
+}
+
 async function apiRequest(path, options = {}) {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
+  const externalSignal = options.signal ?? null;
+  const onExternalAbort = () => controller.abort(externalSignal?.reason);
+
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort(externalSignal.reason);
+    } else {
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
 
   try {
+    const { signal: _signal, ...requestOptions } = options;
+    const requestHeaders = {
+      'Content-Type': 'application/json',
+      ...(requestOptions.headers ?? {}),
+    };
     const response = await fetch(path, {
+      ...requestOptions,
       credentials: 'same-origin',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(options.headers ?? {}),
-      },
-      ...options,
+      headers: requestHeaders,
       signal: controller.signal,
     });
 
@@ -953,11 +1184,14 @@ async function apiRequest(path, options = {}) {
 
     return body;
   } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
+    if (error instanceof Error && error.name === 'AbortError' && !externalSignal?.aborted) {
       throw new Error(API_TIMEOUT_NOTICE);
     }
     throw error;
   } finally {
+    if (externalSignal) {
+      externalSignal.removeEventListener('abort', onExternalAbort);
+    }
     window.clearTimeout(timeoutId);
   }
 }
@@ -971,6 +1205,30 @@ const api = {
   },
   async ledger() {
     return apiRequest(`/api/ledger${ledgerPathSuffix()}`);
+  },
+  async proposalCurrent() {
+    return apiRequest(`/api/proposals/current${ledgerPathSuffix()}`);
+  },
+  async proposalPrepare(body, signal) {
+    return apiRequest(`/api/proposals/prepare${ledgerPathSuffix()}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      signal,
+    });
+  },
+  async proposalConfirm(proposalId, signal) {
+    return apiRequest(`/api/proposals/confirm${ledgerPathSuffix()}`, {
+      method: 'POST',
+      body: JSON.stringify({ proposalId }),
+      signal,
+    });
+  },
+  async proposalCancel(proposalId, signal) {
+    return apiRequest(`/api/proposals/cancel${ledgerPathSuffix()}`, {
+      method: 'POST',
+      body: JSON.stringify({ proposalId }),
+      signal,
+    });
   },
   async customers() {
     return apiRequest(`/api/customers${ledgerPathSuffix()}`);
@@ -1057,6 +1315,8 @@ async function loadDashboard() {
         state.transcriptPreview = '';
       }
     }
+
+    await loadCurrentProposal();
 
     if (dom.currencySelect) {
       dom.currencySelect.value = state.account.preferredCurrency || ledger.currency || 'NGN';
@@ -1227,6 +1487,74 @@ async function refreshLedgerData() {
   await loadCustomerDetails(ledger.customers);
   if (state.selectedCustomerId) {
     await ensureCustomerDetail(state.selectedCustomerId);
+  }
+}
+
+async function confirmPendingProposal() {
+  const started = beginProposalAction(state.proposalPanel, 'confirm');
+  if (!started.started || !state.proposalPanel.activeProposal) {
+    return;
+  }
+
+  state.proposalPanel = started.state;
+  renderProposalReview();
+
+  const proposalId = state.proposalPanel.activeProposal.proposalId;
+  try {
+    const response = await api.proposalConfirm(proposalId);
+    state.proposalPanel = finishProposalAction(state.proposalPanel, response);
+    if (response.status === 'confirmed' || response.status === 'already_confirmed') {
+      appendActivityMessage('You confirmed the payment.');
+    } else {
+      appendActivityMessage(response.message ?? 'Confirmation finished.');
+    }
+    setNotice(formatConfirmStateMessage(response));
+    await refreshLedgerAndSelection();
+    renderAll();
+  } catch (error) {
+    const failureNotice = error instanceof Error ? error.message : SAFE_FAILURE_NOTICE;
+    state.proposalPanel = {
+      ...state.proposalPanel,
+      busyAction: null,
+      liveMessage: failureNotice,
+    };
+    setNotice(failureNotice);
+    renderProposalReview();
+    console.error(error);
+  }
+}
+
+async function cancelPendingProposal() {
+  const started = beginProposalAction(state.proposalPanel, 'cancel');
+  if (!started.started || !state.proposalPanel.activeProposal) {
+    return;
+  }
+
+  state.proposalPanel = started.state;
+  renderProposalReview();
+
+  const proposalId = state.proposalPanel.activeProposal.proposalId;
+  try {
+    const response = await api.proposalCancel(proposalId);
+    state.proposalPanel = finishProposalAction(state.proposalPanel, response);
+    if (response.status === 'cancelled' || response.status === 'already_cancelled') {
+      appendActivityMessage('Proposal cancelled.');
+    } else {
+      appendActivityMessage(response.message ?? 'Cancellation finished.');
+    }
+    setNotice(response.message ?? 'Proposal cancelled.');
+    await refreshLedgerAndSelection();
+    renderAll();
+  } catch (error) {
+    const failureNotice = error instanceof Error ? error.message : SAFE_FAILURE_NOTICE;
+    state.proposalPanel = {
+      ...state.proposalPanel,
+      busyAction: null,
+      liveMessage: failureNotice,
+    };
+    setNotice(failureNotice);
+    renderProposalReview();
+    console.error(error);
   }
 }
 
@@ -1502,6 +1830,12 @@ function bindEvents() {
     event.preventDefault();
     void submitComposer();
   });
+  dom.proposalConfirm?.addEventListener('click', () => {
+    void confirmPendingProposal();
+  });
+  dom.proposalCancel?.addEventListener('click', () => {
+    void cancelPendingProposal();
+  });
 
   dom.customerList.addEventListener('click', (event) => {
     const button =
@@ -1575,6 +1909,20 @@ function cacheDom() {
   dom.clarificationTitle = document.querySelector('[data-role="clarification-title"]');
   dom.clarificationQuestion = document.querySelector('[data-role="clarification-question"]');
   dom.clarificationCandidates = document.querySelector('[data-role="clarification-candidates"]');
+  dom.proposalPanel = document.querySelector('[data-role="proposal-panel"]');
+  dom.proposalHeadline = document.querySelector('[data-role="proposal-headline"]');
+  dom.proposalStatus = document.querySelector('[data-role="proposal-status"]');
+  dom.proposalSummary = document.querySelector('[data-role="proposal-summary"]');
+  dom.proposalMessage = document.querySelector('[data-role="proposal-message"]');
+  dom.proposalOperation = document.querySelector('[data-role="proposal-operation"]');
+  dom.proposalExpires = document.querySelector('[data-role="proposal-expires"]');
+  dom.proposalCandidates = document.querySelector('[data-role="proposal-candidates"]');
+  dom.proposalConfirm = document.querySelector('[data-role="proposal-confirm"]');
+  dom.proposalCancel = document.querySelector('[data-role="proposal-cancel"]');
+  dom.proposalLive = document.querySelector('[data-role="proposal-live"]');
+  dom.collaborationFeed = document.querySelector('[data-role="collaboration-feed"]');
+  dom.collaborationEmpty = document.querySelector('[data-role="collaboration-empty"]');
+  dom.collaborationCount = document.querySelector('[data-role="collaboration-count"]');
   dom.composerForm = document.querySelector('[data-role="composer-form"]');
   dom.composerInput = document.querySelector('[data-role="composer-input"]');
   dom.micToggle = document.querySelector('[data-role="mic-toggle"]');
@@ -1601,6 +1949,20 @@ async function init() {
   cacheDom();
   initSpeechRecognition();
   bindEvents();
+  void registerTalliWebMcpTools({
+    document,
+    requestJson: apiRequest,
+    getSessionId: activeSessionId,
+    onActivity: appendActivityMessage,
+    onProposalOutcome: applyProposalOutcome,
+  });
+  window.addEventListener(
+    'pagehide',
+    () => {
+      abortTalliWebMcpTools();
+    },
+    { once: true },
+  );
   await loadDashboard();
 }
 

@@ -146,6 +146,63 @@
               Send a voice note or type an update. Talli asks before it changes anything unclear.
             </p>
 
+            <div class="panel card reveal proposal-panel" data-role="proposal-panel" hidden>
+              <div class="panel__head proposal-panel__head">
+                <div>
+                  <p class="section-kicker">Human review</p>
+                  <h3 data-role="proposal-headline">Agent prepared a ledger change</h3>
+                </div>
+                <span class="status-pill status-pill--warning" data-role="proposal-status">
+                  Waiting for review
+                </span>
+              </div>
+              <p class="proposal-panel__summary" data-role="proposal-summary"></p>
+              <p class="proposal-panel__message" data-role="proposal-message"></p>
+              <div class="proposal-panel__meta">
+                <span>
+                  <strong>Operation</strong>
+                  <small data-role="proposal-operation"></small>
+                </span>
+                <span>
+                  <strong>Expiry</strong>
+                  <small data-role="proposal-expires"></small>
+                </span>
+              </div>
+              <div class="proposal-panel__candidates" data-role="proposal-candidates"></div>
+              <div class="proposal-panel__actions">
+                <button
+                  class="button button--primary button--small"
+                  type="button"
+                  data-role="proposal-confirm"
+                >
+                  Confirm
+                </button>
+                <button
+                  class="button button--ghost button--small"
+                  type="button"
+                  data-role="proposal-cancel"
+                >
+                  Cancel
+                </button>
+              </div>
+              <p class="proposal-panel__live" data-role="proposal-live" aria-live="polite"></p>
+            </div>
+
+            <div class="panel card reveal collaboration-panel">
+              <div class="panel__head">
+                <div>
+                  <p class="section-kicker">Activity</p>
+                  <h3>Collaboration at a glance</h3>
+                </div>
+                <span class="panel__count" data-role="collaboration-count">0 updates</span>
+              </div>
+              <div class="collaboration-feed" data-role="collaboration-feed"></div>
+              <div class="empty-state collaboration-empty" data-role="collaboration-empty" hidden>
+                <i class="fa-solid fa-comments"></i>
+                <p>Agent activity will appear here as the browser and human work together.</p>
+              </div>
+            </div>
+
             <div class="panel card reveal account-card">
               <div class="panel__head">
                 <div>

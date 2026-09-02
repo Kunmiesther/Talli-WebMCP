@@ -36,6 +36,8 @@ describe('static frontend serving', () => {
       expect(rootHtml).toContain('Open Talli in Telegram');
       expect(rootHtml).toContain('Speak here');
       expect(rootHtml).toContain('What Talli can help you with');
+      expect(rootHtml).toContain('Agent prepared a ledger change');
+      expect(rootHtml).toContain('Collaboration at a glance');
       expect(rootHtml).not.toContain('hero__visual reveal');
       expect(rootHtml).not.toContain('use-cases__media reveal');
       expect(rootHtml).not.toContain('photo-card--story reveal');
