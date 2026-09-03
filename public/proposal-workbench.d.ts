@@ -34,6 +34,17 @@ export interface ProposalWorkbenchState {
   }>;
 }
 
+export interface ProposalActivityEntry {
+  timestamp: string;
+  message: string;
+  kind: string;
+}
+
+export function createProposalActivityEntry(message: string): ProposalActivityEntry | null;
+export function normalizeProposalActivityEntry(activity: unknown): ProposalActivityEntry | null;
+export function normalizeProposalActivityLog(activity: unknown): ProposalActivityEntry[];
+export function formatProposalActivityMessage(kind: string, operation?: string | null): string;
+
 export function createProposalWorkbenchState(): ProposalWorkbenchState;
 export function withCurrentProposal(
   state: ProposalWorkbenchState,

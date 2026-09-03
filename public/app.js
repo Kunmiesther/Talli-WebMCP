@@ -1,9 +1,12 @@
 import {
   appendProposalActivity,
   beginProposalAction,
+  createProposalActivityEntry,
   createProposalWorkbenchState,
   finishProposalAction,
   formatConfirmStateMessage,
+  formatProposalActivityMessage,
+  normalizeProposalActivityLog,
   withCurrentProposal,
   withProposalOutcome,
 } from './proposal-workbench.js';
@@ -72,7 +75,7 @@ const state = {
   clarification: null,
   proposalPanel: {
     ...createProposalWorkbenchState(),
-    activity: loadStoredJson(STORAGE_KEYS.collaboration, []),
+    activity: loadStoredJson(STORAGE_KEYS.collaboration, [], normalizeProposalActivityLog),
   },
   transcriptPreview: '',
   pendingSubmission: null,
@@ -89,13 +92,13 @@ let recognition = null;
 let finalTranscript = '';
 let interimTranscript = '';
 
-function loadStoredJson(key, fallback) {
+function loadStoredJson(key, fallback, normalize = (value) => value) {
   try {
     const raw = sessionStorage.getItem(key);
     if (!raw) {
       return fallback;
     }
-    return JSON.parse(raw);
+    return normalize(JSON.parse(raw));
   } catch {
     return fallback;
   }
@@ -1081,12 +1084,10 @@ function clearNotice() {
   dom.workspaceNote.textContent = DEFAULT_WORKSPACE_NOTE;
 }
 
-function appendActivityMessage(message) {
+function appendActivityMessage(entry) {
   state.proposalPanel = {
     ...state.proposalPanel,
-    activity: appendProposalActivity(state.proposalPanel.activity ?? [], {
-      message,
-    }),
+    activity: appendProposalActivity(state.proposalPanel.activity ?? [], entry),
   };
   saveStoredJson(STORAGE_KEYS.collaboration, state.proposalPanel.activity);
   renderCollaborationActivity();
@@ -1491,10 +1492,12 @@ async function confirmPendingProposal() {
   try {
     const response = await api.proposalConfirm(proposalId);
     state.proposalPanel = finishProposalAction(state.proposalPanel, response);
-    if (response.status === 'confirmed' || response.status === 'already_confirmed') {
-      appendActivityMessage('You confirmed the payment.');
-    } else {
-      appendActivityMessage(response.message ?? 'Confirmation finished.');
+    if (response.status === 'confirmed') {
+      appendActivityMessage(
+        createProposalActivityEntry(
+          formatProposalActivityMessage('confirm', response.proposal?.operation),
+        ),
+      );
     }
     setNotice(formatConfirmStateMessage(response));
     await refreshLedgerAndSelection();
@@ -1525,12 +1528,14 @@ async function cancelPendingProposal() {
   try {
     const response = await api.proposalCancel(proposalId);
     state.proposalPanel = finishProposalAction(state.proposalPanel, response);
-    if (response.status === 'cancelled' || response.status === 'already_cancelled') {
-      appendActivityMessage('Proposal cancelled.');
-    } else {
-      appendActivityMessage(response.message ?? 'Cancellation finished.');
+    if (response.status === 'cancelled') {
+      appendActivityMessage(
+        createProposalActivityEntry(
+          formatProposalActivityMessage('cancel', response.proposal?.operation),
+        ),
+      );
     }
-    setNotice(response.message ?? 'Proposal cancelled.');
+    setNotice(formatConfirmStateMessage(response));
     await refreshLedgerAndSelection();
     renderAll();
   } catch (error) {

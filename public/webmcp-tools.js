@@ -1,3 +1,8 @@
+import {
+  createProposalActivityEntry,
+  formatProposalActivityMessage,
+} from './proposal-workbench.js';
+
 const MAX_SEARCH_RESULTS = 6;
 const MAX_BOUND_LIST = 5;
 const MAX_OVERDUE_RESULTS = 6;
@@ -182,13 +187,6 @@ function safeMessage(error, fallback) {
   return fallback;
 }
 
-function activityEntry(message) {
-  return {
-    timestamp: new Date().toISOString(),
-    message,
-  };
-}
-
 function buildBalanceIndex(ledger) {
   const balances = new Map();
   for (const obligation of ledger.obligations ?? []) {
@@ -317,27 +315,6 @@ function buildProposalResponseMessage(response) {
   };
 }
 
-function formatConfirmStateMessage(response) {
-  switch (response.status) {
-    case 'confirmed':
-      return `You confirmed: ${response.proposal?.summary ?? 'the proposal'}.`;
-    case 'already_confirmed':
-      return 'This proposal was already confirmed.';
-    case 'cancelled':
-      return 'Proposal cancelled.';
-    case 'already_cancelled':
-      return 'This proposal was already cancelled.';
-    case 'expired':
-      return 'This proposal expired before it could be confirmed.';
-    case 'stale':
-      return 'The ledger changed before confirmation.';
-    case 'rejected':
-      return response.message;
-    default:
-      return response.message ?? 'Nothing changed.';
-  }
-}
-
 export function createTalliWebMcpTools(deps) {
   const { requestJson, onActivity = () => {}, onProposalOutcome = () => {} } = deps;
 
@@ -450,7 +427,7 @@ export function createTalliWebMcpTools(deps) {
         .slice(0, limit)
         .map(({ matchScore, ...entry }) => entry);
 
-      onActivity(activityEntry('Agent searched customers.'));
+      onActivity(createProposalActivityEntry(formatProposalActivityMessage('search')));
       return serializeResult({
         status: 'ok',
         query,
@@ -474,7 +451,7 @@ export function createTalliWebMcpTools(deps) {
         return !Number.isNaN(due.getTime()) && due.getTime() < Date.now();
       }).length;
 
-      onActivity(activityEntry('Agent checked the ledger summary.'));
+      onActivity(createProposalActivityEntry(formatProposalActivityMessage('summary')));
       return serializeResult({
         status: 'ok',
         currency: ledger.currency,
@@ -518,7 +495,7 @@ export function createTalliWebMcpTools(deps) {
         });
       }
       if (candidates.length > 1) {
-        onActivity(activityEntry('Agent found multiple possible customers.'));
+        onActivity(createProposalActivityEntry(formatProposalActivityMessage('clarification')));
         return buildReadClarification(
           candidates,
           'Multiple customers match that reference. Talli did not guess.',
@@ -532,7 +509,7 @@ export function createTalliWebMcpTools(deps) {
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
       const openObligations = obligations.filter((obligation) => obligation.status === 'open');
 
-      onActivity(activityEntry('Agent checked a customer balance.'));
+      onActivity(createProposalActivityEntry(formatProposalActivityMessage('balance')));
       return serializeResult({
         status: 'ok',
         currency: ledger.currency,
@@ -574,7 +551,7 @@ export function createTalliWebMcpTools(deps) {
         });
       }
       if (candidates.length > 1) {
-        onActivity(activityEntry('Agent found multiple possible customers.'));
+        onActivity(createProposalActivityEntry(formatProposalActivityMessage('clarification')));
         return buildReadClarification(
           candidates,
           'Multiple customers match that reference. Talli did not guess.',
@@ -597,7 +574,7 @@ export function createTalliWebMcpTools(deps) {
         status: turn.status,
       }));
 
-      onActivity(activityEntry('Agent reviewed customer history.'));
+      onActivity(createProposalActivityEntry(formatProposalActivityMessage('history')));
       return serializeResult({
         status: 'ok',
         customer,
@@ -646,7 +623,7 @@ export function createTalliWebMcpTools(deps) {
         .sort((left, right) => right.daysOverdue - left.daysOverdue)
         .slice(0, limit);
 
-      onActivity(activityEntry('Agent checked overdue debts.'));
+      onActivity(createProposalActivityEntry(formatProposalActivityMessage('overdue')));
       return serializeResult({
         status: 'ok',
         currency: ledger.currency,
@@ -668,11 +645,24 @@ export function createTalliWebMcpTools(deps) {
       });
       const outcome = buildProposalResponseMessage(response);
       if (response.status === 'confirmation_required') {
-        onActivity(activityEntry('Agent prepared a ledger change for review.'));
+        onActivity(
+          createProposalActivityEntry(
+            formatProposalActivityMessage(
+              'prepare',
+              response.proposal?.operation ?? input.operation,
+            ),
+          ),
+        );
       } else if (response.status === 'clarification_required') {
-        onActivity(activityEntry('Agent found ambiguity and did not guess.'));
+        onActivity(
+          createProposalActivityEntry(
+            formatProposalActivityMessage('clarification', input.operation),
+          ),
+        );
       } else if (response.status === 'rejected') {
-        onActivity(activityEntry('Agent tried a ledger change that Talli rejected.'));
+        onActivity(
+          createProposalActivityEntry(formatProposalActivityMessage('rejected', input.operation)),
+        );
       }
       onProposalOutcome(outcome);
       return serializeResult(outcome);
@@ -709,7 +699,11 @@ export function createTalliWebMcpTools(deps) {
         proposal: response.proposal ?? null,
       };
       if (response.status === 'cancelled' || response.status === 'already_cancelled') {
-        onActivity(activityEntry('Agent cancelled a proposal.'));
+        onActivity(
+          createProposalActivityEntry(
+            formatProposalActivityMessage('cancel', response.proposal?.operation),
+          ),
+        );
       }
       onProposalOutcome(outcome);
       return serializeResult(outcome);

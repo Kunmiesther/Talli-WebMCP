@@ -555,4 +555,83 @@ describe('browser WebMCP registration', () => {
       },
     });
   });
+
+  it('emits canonical readable activity entries for proposal actions', async () => {
+    const activities: unknown[] = [];
+    const requestJson = vi.fn(async (path) => {
+      if (path.startsWith('/api/proposals/prepare')) {
+        return {
+          status: 'confirmation_required',
+          proposal: {
+            proposalId: 'proposal-3',
+            operation: 'CREATE_OBLIGATION',
+            summary: 'Create credit for Bisi for NGN 10.',
+            status: 'pending',
+            createdAt: '2026-09-02T10:00:00.000Z',
+            expiresAt: '2026-09-02T10:10:00.000Z',
+            confirmedAt: null,
+            cancelledAt: null,
+          },
+          message: 'Review this proposal before confirming.',
+        };
+      }
+
+      if (path.startsWith('/api/proposals/cancel')) {
+        return {
+          status: 'cancelled',
+          reasonCode: null,
+          message: 'Proposal cancelled.',
+          proposal: {
+            proposalId: 'proposal-3',
+            operation: 'SETTLE_OBLIGATION',
+            summary: 'Settle the obligation for Bisi.',
+            status: 'cancelled',
+            createdAt: '2026-09-02T10:00:00.000Z',
+            expiresAt: '2026-09-02T10:10:00.000Z',
+            confirmedAt: null,
+            cancelledAt: '2026-09-02T10:03:00.000Z',
+          },
+        };
+      }
+
+      throw new Error(`Unexpected request: ${path}`);
+    });
+
+    const tools = createTalliWebMcpTools({
+      requestJson,
+      getSessionId: () => 'demo',
+      onActivity: (value: unknown) => activities.push(value),
+      onProposalOutcome: vi.fn(),
+    });
+    const [, , , , , prepareTool, cancelTool] = tools;
+
+    await requireTool(prepareTool).execute(
+      {
+        operation: 'CREATE_OBLIGATION',
+        customer: { kind: 'new', name: 'Bisi', aliases: [] },
+        amount: { value: 10, currency: 'NGN' },
+      },
+      { signal: new AbortController().signal },
+    );
+
+    await requireTool(cancelTool).execute(
+      { proposalId: 'proposal-3' },
+      { signal: new AbortController().signal },
+    );
+
+    expect(activities).toHaveLength(2);
+    for (const entry of activities) {
+      expect(entry).toMatchObject({
+        timestamp: expect.any(String),
+        message: expect.any(String),
+      });
+      expect((entry as { message: string }).message).not.toBe('[object Object]');
+    }
+    expect(activities[0]).toMatchObject({
+      message: 'Agent prepared a credit entry for review.',
+    });
+    expect(activities[1]).toMatchObject({
+      message: 'You cancelled the settlement.',
+    });
+  });
 });

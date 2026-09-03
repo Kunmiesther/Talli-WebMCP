@@ -1,5 +1,7 @@
 export const PROPOSAL_ACTIVITY_LIMIT = 4;
 
+const LEGACY_ACTIVITY_MESSAGE = '[object Object]';
+
 function cloneProposal(proposal) {
   if (!proposal) {
     return null;
@@ -26,12 +28,118 @@ function cloneOverlay(overlay) {
   };
 }
 
-function normalizeActivity(activity) {
+function normalizeActivityMessage(message) {
+  if (typeof message !== 'string') {
+    return '';
+  }
+
+  const normalized = message.trim();
+  if (!normalized || normalized === LEGACY_ACTIVITY_MESSAGE) {
+    return '';
+  }
+
+  return normalized;
+}
+
+function normalizeActivityTimestamp(timestamp) {
+  if (typeof timestamp === 'string' && timestamp.trim()) {
+    return timestamp;
+  }
+
+  return new Date().toISOString();
+}
+
+export function createProposalActivityEntry(message) {
+  const normalizedMessage = normalizeActivityMessage(message);
+  if (!normalizedMessage) {
+    return null;
+  }
+
   return {
-    timestamp: activity.timestamp ?? new Date().toISOString(),
-    message: String(activity.message ?? '').trim(),
-    kind: activity.kind ?? 'info',
+    timestamp: new Date().toISOString(),
+    message: normalizedMessage,
+    kind: 'info',
   };
+}
+
+export function normalizeProposalActivityEntry(activity) {
+  if (typeof activity === 'string') {
+    return createProposalActivityEntry(activity);
+  }
+
+  if (!activity || typeof activity !== 'object' || Array.isArray(activity)) {
+    return null;
+  }
+
+  const normalizedMessage = normalizeActivityMessage(activity.message);
+  if (!normalizedMessage) {
+    return null;
+  }
+
+  return {
+    timestamp: normalizeActivityTimestamp(activity.timestamp),
+    message: normalizedMessage,
+    kind: typeof activity.kind === 'string' && activity.kind.trim() ? activity.kind : 'info',
+  };
+}
+
+export function normalizeProposalActivityLog(activity) {
+  if (!Array.isArray(activity)) {
+    return [];
+  }
+
+  return activity
+    .map((entry) => normalizeProposalActivityEntry(entry))
+    .filter((entry) => entry !== null)
+    .slice(-PROPOSAL_ACTIVITY_LIMIT);
+}
+
+function describeProposalOperation(operation) {
+  switch (operation) {
+    case 'CREATE_OBLIGATION':
+      return 'credit entry';
+    case 'RECORD_PAYMENT':
+      return 'payment';
+    case 'SETTLE_OBLIGATION':
+      return 'settlement';
+    default:
+      return 'ledger change';
+  }
+}
+
+export function formatProposalActivityMessage(kind, operation = null) {
+  const noun = describeProposalOperation(operation);
+
+  switch (kind) {
+    case 'summary':
+      return 'Agent checked the ledger summary.';
+    case 'search':
+      return 'Agent searched customers.';
+    case 'balance':
+      return 'Agent checked a customer balance.';
+    case 'history':
+      return 'Agent reviewed customer history.';
+    case 'overdue':
+      return 'Agent checked overdue debts.';
+    case 'prepare':
+      return operation
+        ? `Agent prepared a ${noun} for review.`
+        : 'Agent prepared a ledger change for review.';
+    case 'clarification':
+      return operation
+        ? `Agent found ambiguity while preparing a ${noun} and did not guess.`
+        : 'Agent found ambiguity and did not guess.';
+    case 'rejected':
+      return operation
+        ? `Agent tried a ${noun} that Talli rejected.`
+        : 'Agent tried a ledger change that Talli rejected.';
+    case 'confirm':
+      return `You confirmed the ${noun}.`;
+    case 'cancel':
+      return operation ? `You cancelled the ${noun}.` : 'You cancelled the ledger change.';
+    default:
+      return 'Activity recorded.';
+  }
 }
 
 export function createProposalWorkbenchState() {
@@ -200,9 +308,7 @@ export function finishProposalAction(state, outcome) {
 }
 
 export function appendProposalActivity(activity, entry) {
-  const normalized = normalizeActivity(entry);
-  const next = [...activity, normalized];
-  return next.slice(-PROPOSAL_ACTIVITY_LIMIT);
+  return normalizeProposalActivityLog([...(Array.isArray(activity) ? activity : []), entry]);
 }
 
 export function isProposalActionable(state) {
@@ -212,15 +318,16 @@ export function isProposalActionable(state) {
 }
 
 export function formatConfirmStateMessage(response) {
+  const operation = response?.proposal?.operation;
   switch (response.status) {
     case 'confirmed':
-      return `You confirmed: ${response.proposal?.summary ?? 'the proposal'}.`;
+      return formatProposalActivityMessage('confirm', operation);
     case 'already_confirmed':
-      return 'This proposal was already confirmed.';
+      return `This ${describeProposalOperation(operation)} was already confirmed.`;
     case 'cancelled':
-      return 'Proposal cancelled.';
+      return formatProposalActivityMessage('cancel', operation);
     case 'already_cancelled':
-      return 'This proposal was already cancelled.';
+      return `This ${describeProposalOperation(operation)} was already cancelled.`;
     case 'expired':
       return 'This proposal expired before it could be confirmed.';
     case 'stale':
