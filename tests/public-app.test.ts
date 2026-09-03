@@ -11,6 +11,11 @@ describe('public app renderer source', () => {
     expect(appSource).toContain('registerTalliWebMcpTools');
     expect(appSource).toContain('abortTalliWebMcpTools');
     expect(appSource).toContain('Talli needs clarification');
+    expect(appSource).toContain('showProposalDetails');
+    expect(appSource).toContain('dom.proposalOperation.hidden = !showProposalDetails;');
+    expect(appSource).toContain('dom.proposalExpires.hidden = !showProposalDetails;');
+    expect(appSource).toContain('dom.proposalConfirm.hidden = true;');
+    expect(appSource).toContain('dom.proposalCancel.hidden = true;');
     expect(appSource).not.toContain('confirm_ledger_mutation');
 
     const html = readFileSync(resolve(process.cwd(), 'public/index.html'), 'utf8');

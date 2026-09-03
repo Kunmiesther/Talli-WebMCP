@@ -1,325 +1,317 @@
 # Talli
+Talli is an agent-native conversational credit ledger.
 
-### Send a voice note. Talli keeps the ledger.
+Live app: https://talli-webmcp.onrender.com/
 
-![TypeScript](https://img.shields.io/badge/TypeScript-234B6B?style=for-the-badge)
-![Node.js](https://img.shields.io/badge/Node.js-23362B?style=for-the-badge)
-![Telegram](https://img.shields.io/badge/Telegram-2A6F97?style=for-the-badge)
-![Supabase](https://img.shields.io/badge/Supabase-0F5E54?style=for-the-badge)
-![Groq](https://img.shields.io/badge/Groq-8B4A2B?style=for-the-badge)
-![Vitest](https://img.shields.io/badge/Vitest-6B4E2E?style=for-the-badge)
+Telegram bot: https://t.me/TalliMCP_bot
 
-**[Try Talli](https://talli.onrender.com)** ·
+This repository is the WebMCP Challenge extension of the original Talli project: https://github.com/Kunmiesther/Talli
 
-Talli is a voice-first credit assistant for small businesses. It lets a merchant record customer credit the same way they would normally explain it to another person: *“Sarah owes me 200 dollars,” “she paid 50 today,” “James will pay on Friday.”* Talli turns those conversations into a running ledger, so the merchant can see who owes them, how much has been paid, what is still outstanding and what happened previously without having to maintain the record by hand.
+Send a voice note. Talli keeps the ledger.
 
-## Why I built Talli
+## 1. What Talli Is
 
-For a lot of small businesses, giving a trusted customer something on credit is ordinary. Keeping track of that credit is where things can get messy.
+Talli helps a merchant keep a persistent credit ledger by speaking or typing ordinary business language. It tracks customers, open obligations, partial payments, settlements, corrections, aliases, and history so the person does not have to reconstruct the balance manually.
 
-A merchant might write *Sarah — $200* in a notebook today, add a $50 payment beside it three days later, then start another page for James, who says he will pay on Friday. That system works while the book is nearby and there are only a few things to remember. Once there are more customers, partial payments and old balances involved, it becomes surprisingly easy for the record to stop matching what actually happened.
+The product already existed before WebMCP. This repository adds a browser-native WebMCP layer and a visible human-review flow on top of the existing Talli system.
 
-The problem is not only that a notebook can be lost, damaged or have pages go missing. Even when the book is perfectly fine, finding an old entry and working out the current balance still takes time. Moving the same process into chat messages does not really solve it either because old updates eventually disappear into a long conversation.
+## 2. The Real Problem
 
-There is bookkeeping software for this, of course, but that often means introducing another workflow: open the software, find the customer, create a transaction, choose the right fields, enter the amount, save it, then remember to do the same thing when the customer pays.
+Small businesses and informal traders usually do not think in database records. They think in sentences:
 
-I wanted the interaction to be much simpler. If the merchant already knows how to say *“Sarah paid me 50 dollars today,”* why should recording it require anything more complicated than that?
+- "Ada owes me 65,000 naira."
+- "She paid 10,000."
+- "Close the debt."
 
-> **What if keeping a proper credit record was as easy as sending a voice note?**
+The hard part is not capturing the words. The hard part is keeping the financial state correct when customers repeat, aliases overlap, payments are partial, obligations are ambiguous, and the same ledger must work across voice, text, web, and Telegram.
 
-That became Talli.
+## 3. Why Talli Is a Strong WebMCP Use Case
 
-## What using it actually looks like
+Talli is a good fit for WebMCP because a browser agent can help with the same live state the human is already seeing:
 
-Say a merchant gives Sarah $200 worth of goods on credit. Instead of opening a form, they can tell Talli:
+- read the current ledger
+- search customers and histories
+- prepare a proposed mutation safely
+- let the human confirm the exact change in the visible UI
 
-```text
-Sarah owes me 200 dollars.
-```
+That is a real collaboration boundary, not a thin CRUD wrapper.
 
-Talli records the credit and Sarah now has an outstanding balance of $200. If she comes back later and pays part of it, the merchant can simply continue:
+## 4. Human + Agent Collaboration
 
-```text
-Sarah paid me 50 dollars.
-```
+The browser agent can read and prepare. The human confirms.
 
-Talli finds Sarah's existing credit, records the payment and leaves $150 outstanding. When Sarah eventually pays the rest:
+The visible workflow is:
 
-```text
-Sarah has paid back the 150 dollars.
-```
+1. The agent prepares a proposal.
+2. Talli validates and resolves the request.
+3. Talli shows a visible review card.
+4. The human clicks Confirm in Talli.
+5. The ledger changes exactly once.
 
-the balance is settled, but the original credit and both payments remain part of her history.
+If the request is ambiguous, Talli asks for clarification instead of guessing.
 
-The same idea works when the update contains more than an amount. A merchant can say:
+## 5. Verified Demo Journey
 
-```text
-James is owing 500 dollars and will pay on Friday.
-```
+The production deployment at https://talli-webmcp.onrender.com/ was verified to do all of the following:
 
-and Talli records the credit together with the due date.
+- expose exactly seven WebMCP tools in the browser
+- let ChatGPT discover and use those tools
+- read the ledger summary successfully
+- prepare a mutation without changing the ledger
+- apply a human-confirmed credit exactly once
+- return clarification for an ambiguous "Ada paid 10,000" request
+- keep the ledger total unchanged during ambiguity
+- preserve Telegram linking and shared-ledger behavior
+- isolate anonymous browser sessions
 
-This works from the web app with text or browser voice input, and the same ledger can also be connected to Telegram. The Telegram integration accepts normal text and voice notes, so the merchant does not have to learn a completely different way of recording something just because they moved from one interface to another.
+## 6. WebMCP Tools
 
-```mermaid
-flowchart LR
-    A[Merchant speaks or types] --> B[Web or Telegram]
-    B --> C[Talli understands the update]
-    C --> D[Checks the existing ledger]
-    D --> E[Validates what should change]
-    E --> F[Updates the ledger]
-    F --> G[Balances and history stay in sync]
-```
+Exactly seven tools are registered in the browser when `document.modelContext` is available:
 
-The web interface is useful when the merchant wants to look through customers, balances and history. Telegram is useful when they simply want to record something quickly. They are two ways into the same ledger rather than two separate products.
+| Tool | Purpose | Read-only |
+| --- | --- | --- |
+| `get_ledger_summary` | Summarize the current ledger state | Yes |
+| `search_customers` | Search customers by name, alias, or id | Yes |
+| `get_customer_balance` | Resolve one customer and show their balance | Yes |
+| `get_customer_history` | Show compact customer history | Yes |
+| `list_overdue_debts` | Show overdue open debts | Yes |
+| `prepare_ledger_mutation` | Prepare a proposed credit, payment, or settlement | No |
+| `cancel_ledger_mutation` | Cancel the current pending proposal | No |
 
-## The part that became harder than I expected
+There is no agent-callable confirmation tool.
 
-Voice transcription was not the difficult part of Talli. The harder problem appeared as soon as conversations started depending on things that had happened earlier.
+## 7. Safe Financial Delegation
 
-Take these two messages:
+Talli does not expose a direct write tool to the browser agent.
 
-```text
-Monday:    Sarah owes me 200 dollars.
-Thursday:  Sarah paid me 50 dollars.
-```
+The safe mutation flow is:
 
-The second message only makes sense because of the first one. Talli has to know that Sarah already has an open credit, recognise that $50 is a payment rather than another amount she owes, apply it to the right record and leave the correct balance behind.
+1. Agent prepares a request.
+2. Talli resolves entities and validates the exact action.
+3. Talli creates an opaque proposal id and stores it in session state.
+4. The visible Talli UI shows the proposal for review.
+5. The human confirms in Talli.
+6. The ledger changes only if the proposal is still valid.
 
-Then the cases get less convenient. What if there are two customers named Sarah? What if Sarah has two open credits? What does *“she paid the remaining one”* refer to? Is *“make that 250”* a new debt or a correction to something the merchant just said?
+Safety details:
 
-Those are small sentences, but they can have very different effects on a financial record. That changed the problem I was solving from simple extraction into something more important: **how can an agent understand conversational updates over time without confidently changing the wrong financial state?**
+- proposal ids are opaque and short-lived
+- proposals expire after ten minutes
+- the stored ledger fingerprint prevents stale confirmation
+- confirmation is idempotent
+- cancellation is idempotent
+- the same proposal cannot be applied twice
+- backend serialization is process-local and session-scoped, not distributed locking
 
-The architecture that came out of that question deliberately separates language understanding from ledger authority. AI is useful for interpreting what the merchant means and using conversational context, but it does not get unrestricted control over the ledger. Talli validates the resulting action against the existing financial state before applying it, and common unambiguous statements also have a deterministic path so that every ordinary update does not have to depend on an external model call.
+## 8. Ambiguity and Abstention
 
-That separation matters most when Talli is uncertain. If two customers or two open credits could reasonably match a message, guessing is not a clever fallback. It is a way to corrupt the ledger.
+Talli is designed to abstain when the request is not safe to execute.
 
-> **When the financial state is unclear, Talli should ask rather than guess.**
+Example from the verified deployment:
 
-## What is working today
+- there were three customers matching "Ada"
+- a payment request for "Ada" returned `clarification_required`
+- the response used `AMBIGUOUS_CUSTOMER`
+- three bounded candidates were returned
+- the ledger total stayed at 150,000
 
-The current build covers the full credit lifecycle I wanted for the first version: new customer credit, repeat credit, partial payments, full settlement, corrections, due dates, outstanding balances and customer history. It can use recent conversation and existing ledger context to resolve later updates, while ambiguous customers or obligations can be held for clarification instead of being changed blindly.
+This is the correct behavior for a financial ledger. Talli does not silently guess.
 
-Voice and text are both supported on the web. Telegram account linking connects the merchant's Telegram identity to the same Talli user and ledger, and the local Telegram worker supports text messages, voice notes, `/balance`, `/customers`, `/help` and the linking flow. Voice notes are downloaded, transcribed and passed through the same Talli service as typed updates, so Telegram does not maintain a second version of the merchant's financial state.
+## 9. How WebMCP Is Implemented
 
-For persistence, Talli can use local file storage during development or Supabase/PostgreSQL for user-scoped persistent state. Ledger events, conversation state, preferences and account links are kept separately so one merchant's records do not become another merchant's context.
+WebMCP is browser-native. It is not a backend MCP server.
 
-Underneath that is an event-based ledger rather than a single balance that gets overwritten. A $200 credit followed by a $50 payment is still represented as the original credit and the later payment, while the current $150 balance is derived from that history. That makes corrections, payment history and state verification much easier to reason about.
+Implementation details:
 
-## How I measured it
+- `public/app.js` feature-detects `document.modelContext`
+- `public/webmcp-tools.js` registers the seven tools imperatively
+- every tool uses same-origin JSON requests
+- tool schemas are strict JSON Schemas with `additionalProperties: false`
+- read tools set `annotations.readOnlyHint: true`
+- mutation tools set `annotations.readOnlyHint: false`
+- tools that surface customer names or ledger content set `annotations.untrustedContentHint: true`
+- the browser still works normally when `document.modelContext` is absent
 
-I did not want to evaluate Talli by recording a demo with three prompts I already knew would work. Before tuning the main agent paths, I locked a benchmark of **8 scenarios and 18 conversation turns**, together with the expected financial state after each turn. The cases include simple credit, partial and full payments, corrections, repeat customers, new obligations, references to earlier events, an ambiguity case where the correct behaviour is to abstain, and a Nigerian Pidgin stress case that came from an earlier multilingual product hypothesis.
+## 10. Architecture
 
-The main metric is **Ledger State Accuracy (LSA)**. Rather than asking whether the model produced roughly the right sentence or action label, it checks whether the financially meaningful result is correct after the turn: customer, obligation, payment, outstanding balance, settlement status and due date where applicable.
+- Frontend: plain JavaScript in `public/`
+- Backend: TypeScript on Node.js in `src/`
+- Persistence: Supabase in production, file-backed storage for local development
+- Hosting: Render
+- State model: event-sourced ledger with session-scoped proposal state
+- Telegram: existing linked-web-session flow, not a separate ledger
 
-I also track **Unsafe Mutation Rate (UMR)** because ordinary accuracy turned out not to tell the whole story. UMR looks specifically at the cases where the agent does not have enough information to safely act and asks whether it changed the ledger anyway.
+Core directories:
 
-That distinction produced one of the most useful results in the project. A deliberately unsafe control scored **94.44% Ledger State Accuracy**, which looks excellent in isolation, but it had **100% Unsafe Mutation Rate** on the ambiguity case. In other words, it got almost the entire benchmark right and still made the exact mistake I did not want a financial agent to make.
+- `src/app/`
+- `src/domain/`
+- `src/integrations/`
+- `public/`
+- `supabase/`
+- `tests/`
+- `docs/`
 
-That experiment changed what I considered a "good" result. An agent that is correct most of the time but confidently edits the wrong customer's record when it is uncertain is not safe simply because its aggregate score is high.
+## 11. Pre-existing Talli vs WebMCP Challenge Extension
 
-> **For a financial agent, knowing when not to change the ledger can matter just as much as knowing what to change.**
+| Pre-existing Talli | WebMCP Challenge extension |
+| --- | --- |
+| Voice-first conversational credit ledger | Imperative `document.modelContext.registerTool` integration |
+| Event-sourced financial state | Seven structured browser tools |
+| Customer/entity resolution | Strict JSON Schemas and safe ambiguity handling |
+| Partial/full payments and corrections | Proposal/confirmation state machine |
+| Ambiguity abstention | Visible human review before ledger mutation |
+| Telegram/web shared ledger | Idempotent confirmation and stale protection |
+| Supabase persistence | Isolated signed browser sessions and WebMCP headers |
 
-## How Talli changed during development
+WebMCP work in this repository lives on the dedicated `webmcp-challenge` branch.
 
-The first model-backed version tried to go directly from a merchant's message to a large structured ledger action. It seemed convenient because the model could theoretically do everything in one step, but the live benchmark exposed how brittle that boundary was. Provider failures and schema-invalid outputs dominated the V1 runs, with both the baseline and advanced paths recording only **5.6% LSA** in those experiments.
-
-For V2, I reduced the model's job. Instead of asking it to construct the complete financial mutation, the model produced a smaller intent that deterministic code could validate and compile into the richer ledger action. That gave the application a much cleaner boundary between understanding language and changing money-related state. It also made the remaining weakness easier to see: references to existing customers and obligations still needed better context.
-
-V3 therefore moved candidate retrieval ahead of interpretation. Talli first narrows the customers and open obligations that could reasonably matter, then gives the interpreter that smaller context rather than expecting it to reason over everything. The implementation and tests were completed, but the intended live comparison hit external provider connection failures and rate limits, so I did not assign V3 a benchmark score that I could not actually measure.
-
-The product itself continued moving after those experiments. Persistent sessions and an event-backed ledger made multi-turn use possible, deterministic parsing reduced unnecessary provider dependence for obvious statements, and Telegram turned the same runtime into something a merchant could use through an existing messaging app. Final manual testing also surfaced much less glamorous bugs that mattered just as much in practice: payment phrases such as *“paid back”*, debt phrasing such as *“is owing”*, date handling, binary image serving, shared web/Telegram state and account disconnect/reconnect. Those cases were fixed and added to regression coverage rather than treated as demo-only exceptions.
-
-The full experiment history, including the evidence behind each change, is in **[IMPROVEMENT_LOG.md](./IMPROVEMENT_LOG.md)**.
-
-### Main failure mode
-
-The biggest failure mode was not that the model could not understand ordinary credit language. It was **giving the model too much responsibility for the final financial action**. Large structured outputs made provider behaviour, schema compliance and contextual resolution part of one fragile step.
-
-The architecture became more dependable as those responsibilities were separated: the model handles the part that benefits from flexible language understanding, candidate retrieval narrows the relevant context, deterministic code compiles and validates the action, and the ledger remains the authority on whether a state transition is allowed.
-
-External providers can still fail or rate-limit free-form interpretation, so that dependency has not magically disappeared. The difference is that the financial core no longer assumes that a successful model response is enough reason to mutate state.
-
-### What didn't work, and what I kept from it
-
-The rich-action approach was removed because asking for more structured output did not make the system more reliable. Provider chasing also stopped being useful once repeated live runs were being shaped more by free-tier availability and rate limits than by architecture. Candidate retrieval stayed because the implementation solved a real context problem even though the live V3 benchmark was inconclusive, while the unsafe control stayed in the evaluation because it exposed a weakness that aggregate accuracy would otherwise hide.
-
-Those failed experiments ended up influencing Talli more than another successful demo prompt would have. They pushed the product toward smaller model responsibilities, explicit state validation and a much stronger definition of what "correct" means for a financial agent.
-
-## Agent trajectories
-
-The repository includes representative trajectories for the agents used during the project, with observable instructions, inputs, outputs, tool responses, retries and state changes where that evidence was preserved. It also documents the development-agent path from repository evidence without exposing or inventing private chain-of-thought.
-
-**[View the agent trajectories](docs/AGENT_TRAJECTORIES.md)**
-
-## Technical overview
-
-Talli is written in TypeScript and runs on Node.js. Zod validates model-facing contracts and financial intents, Supabase/PostgreSQL provides persistent shared storage, and Vitest covers the ledger, runtime, integrations and evaluation logic. Telegram voice notes use an OpenAI-compatible transcription boundary, with Groq and `whisper-large-v3-turbo` used for the configured transcription path during development. The interpretation layer is also OpenAI-compatible, which keeps the application from being tied to one model provider.
-
-```text
-src/
-├── app/                     Runtime service, API and storage
-├── domain/                  Ledger, money and financial actions
-├── integrations/
-│   ├── telegram/            Linking, messages, commands and voice notes
-│   └── transcription/       Voice transcription boundary
-├── llm/                     Prompts, context, resolution and intent compilation
-└── benchmark/               Locked evaluation and smoke harnesses
-
-public/                      Web application
-tests/                       Automated test suite
-supabase/migrations/         Persistent database schema
-artifacts/                   Saved benchmark evidence and trajectories
-docs/AGENT_TRAJECTORIES.md   Representative agent traces
-IMPROVEMENT_LOG.md           Development and experiment history
-```
-
-The main stack is **TypeScript, Node.js, Zod, Supabase/PostgreSQL, Telegram Bot API, Groq, OpenAI-compatible model APIs, Whisper Large V3 Turbo, Vitest, Biome, HTML/CSS/JavaScript and Render**.
-
-## Reproduction Guide
-
-The project can run with local file storage for development or Supabase when persistent shared state is required. A clean installation starts with:
+## 12. Running Locally
 
 ```bash
-git clone https://github.com/Kunmiesther/Talli.git
-cd Talli
 npm ci
+npm run build
+npm run typecheck
+npm test
 ```
 
-Copy `.env.example` to `.env` and configure only the services you intend to use. The important environment groups are:
-
-```env
-# Interpretation
-OPENAI_API_KEY=
-OPENAI_BASE_URL=
-OPENAI_MODEL=
-
-# Voice transcription
-TRANSCRIPTION_API_KEY=
-TRANSCRIPTION_BASE_URL=
-TRANSCRIPTION_MODEL=
-
-# Telegram
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_BOT_USERNAME=UseTalliBot
-TELEGRAM_WEBHOOK_SECRET=
-TALLI_PUBLIC_URL=https://talli.onrender.com
-
-# Persistent storage
-TALLI_STORAGE_DRIVER=supabase
-SUPABASE_URL=
-SUPABASE_SERVICE_ROLE_KEY=
-
-# Runtime
-SESSION_SECRET=
-TALLI_TIMEZONE=
-```
-
-Real credentials should never be committed. For Supabase-backed persistence, apply the migration in `supabase/migrations/001_talli_core.sql` before starting the application. Without the Supabase storage driver, Talli can use its local file-backed development storage.
-
-Start the web/API service with:
+For local development:
 
 ```bash
 npm run dev:api
 ```
 
-The default development URL is `http://localhost:3000`.
-
-For the local Telegram integration, start the worker separately:
+Optional Telegram worker:
 
 ```bash
 npm run dev:telegram
 ```
 
-The web service and Telegram worker use the same configured storage, which is what allows both interfaces to operate on one merchant ledger.
-Do not run polling and webhook delivery against the same bot at the same time.
+Copy `.env.example` to `.env` and set only the services you actually need.
 
-For production webhook delivery on Render, register the webhook once after deployment:
+## 13. Testing WebMCP
 
-```bash
-npm run telegram:webhook:set
-```
+Practical ways to verify the browser integration:
 
-To inspect the current Telegram webhook status:
+- ChatGPT in-app browser
+- Chrome flag `chrome://flags/#enable-webmcp-testing` when supported
+- Model Context Tool Inspector when compatible
+- an ordinary browser, which should still load Talli normally even without `document.modelContext`
 
-```bash
-npm run telegram:webhook:info
-```
-
-### Tests and quality checks
-
-Run the test suite with:
+Useful commands:
 
 ```bash
 npm test
-```
-
-The repository also provides:
-
-```bash
-npm run typecheck
-npm run lint
 npm run build
+npm run typecheck
+npx.cmd biome check public/app.js public/proposal-workbench.js public/webmcp-tools.js src/app/ledger-mutations.ts src/app/talli-service.ts src/domain/ledger.ts tests/ledger-mutations.test.ts tests/proposal-workbench.test.ts tests/public-app.test.ts tests/webmcp-tools.test.ts
 ```
 
-Tests cover ledger operations, partial and full payments, corrections, due dates, ambiguity handling, shared web/Telegram state, user isolation, Telegram linking and voice notes, transcription configuration, static serving and safe provider failures.
+## 14. Deployment
 
-### Reproducing the benchmark
+The WebMCP challenge deployment runs on Render as a separate Node web service.
 
-The benchmark uses synthetic conversations and does not require private merchant data. The expected financial states are locked in the repository so the implementations can be compared against the same target.
+- deployment guide: [docs/WEBMCP_DEPLOYMENT.md](docs/WEBMCP_DEPLOYMENT.md)
+- production URL: https://talli-webmcp.onrender.com/
 
-For the baseline in PowerShell:
+The deployment uses the same-origin browser UI and API, and the production responses include:
 
-```powershell
-$env:TALLI_INTERPRETER_MODE='baseline'
-npm run benchmark
+- `Origin-Agent-Cluster: ?1`
+- `Permissions-Policy: tools=(self)`
+
+## 15. Environment Variables
+
+Required for the WebMCP deployment:
+
+- `SESSION_SECRET`
+- `TALLI_STORAGE_DRIVER`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+
+Optional LLM variables:
+
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL`
+- `OPENAI_BASE_URL`
+- `TRANSCRIPTION_API_KEY`
+- `TRANSCRIPTION_MODEL`
+- `TRANSCRIPTION_BASE_URL`
+
+Optional local/runtime variables:
+
+- `TALLI_TIMEZONE`
+- `TALLI_HOST`
+- `TALLI_PORT`
+
+Telegram variables should be omitted for the WebMCP deployment unless you intentionally want Telegram enabled:
+
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_BOT_USERNAME`
+- `TELEGRAM_WEBHOOK_SECRET`
+- `TALLI_PUBLIC_URL`
+
+Never commit secrets. Enter them only in Render or your local `.env` file.
+
+## 16. Tests and Verified Results
+
+Automated tests cover:
+
+- ledger mutation proposals
+- session isolation
+- Telegram linking and webhook behavior
+- browser WebMCP registration and schema validation
+- proposal workbench rendering helpers
+- public app source checks
+
+Verified live results from the production deployment:
+
+- seven WebMCP tools discovered in the browser
+- `get_ledger_summary` succeeded
+- `prepare_ledger_mutation` produced a proposal without mutating the ledger
+- human confirmation applied a `65,000` credit exactly once
+- ambiguous Ada payment returned clarification and left the ledger unchanged
+- Telegram worked through `@TalliMCP_bot`
+- anonymous browser sessions were isolated
+- the required WebMCP headers were present
+
+## 17. Security and Privacy
+
+Safety rules in the current implementation:
+
+- browser sessions are signed
+- public visitors do not share a default ledger
+- mutation proposals are session-owned
+- confirmation is idempotent and proposal-scoped
+- clarification responses do not leak the full ledger
+- WebMCP remains same-origin
+- there is no permissive cross-origin exposure
+- logs avoid secrets and tokens
+
+## 18. Current Limitations
+
+- proposal serialization is process-local, not distributed locking
+- Render is run as a single web instance for safe mutation ordering
+- ordinary browsers without `document.modelContext` do not expose WebMCP tools
+- Telegram is optional and should remain disabled in the challenge deployment unless intentionally configured
+- file storage is still ephemeral on Render if used instead of Supabase
+
+## 19. Repository Structure
+
+```text
+public/                  Browser UI and WebMCP registration
+src/app/                 HTTP API, storage, and Talli service
+src/domain/              Ledger, actions, and money types
+src/integrations/        Telegram and transcription integrations
+supabase/                Database schema and migrations
+tests/                   Automated tests
+docs/                    Challenge, deployment, submission, and demo docs
 ```
 
-For Bash or Git Bash:
+## 20. License
 
-```bash
-TALLI_INTERPRETER_MODE=baseline npm run benchmark
-```
+MIT. See [LICENSE](LICENSE).
 
-Run the advanced interpreter with:
+## 21. Built By
 
-```bash
-TALLI_INTERPRETER_MODE=advanced npm run benchmark
-```
+Original Talli: Estar Kunmi / Kunmiesther.
 
-The repository also contains benchmark controls and two focused smoke suites:
-
-```bash
-npm run smoke:contract
-npm run smoke:resolution
-```
-
-Benchmark output includes the interpreter mode, scenario and turn counts, Ledger State Accuracy, Action Accuracy, abstention-required turns, unsafe mutations and Unsafe Mutation Rate. Saved experiment artifacts are kept under `artifacts/experiments/`, while sanitized trajectory evidence can be written to `artifacts/trajectories/`.
-
-The live model benchmark and smoke suites can take several minutes depending on provider response time and rate limits. No fixed dollar reproduction cost is claimed because the development runs used provider-dependent/free-tier endpoints and cost changes with the configured model and token usage.
-
-## Current limitations
-
-Talli is currently a credit ledger, not a bank, payment processor or full accounting system. It only knows that a payment happened when the merchant tells it or an integration supplies that information, and it does not move money on a merchant's behalf.
-
-The demonstrated product language is English, although the evaluation repository still contains a Nigerian Pidgin stress scenario from an earlier multilingual direction. Currency preferences are supported, but Talli does not perform FX conversion. WhatsApp and automatic debtor reminders are not implemented, and the verified Telegram development path currently uses the separate polling worker rather than pretending that the public web deployment also guarantees a continuously running Telegram worker.
-
-Those limitations are deliberate boundaries around the current version rather than features hidden behind unfinished UI.
-
-## Where Talli goes next
-
-The next version of Talli should not become more complicated simply because more features are possible. The product is useful because recording credit can disappear into something the merchant already does naturally, so the first priority is to make that interaction available in more of the places where business already happens.
-
-**WhatsApp is the obvious next interface**, alongside a production Telegram deployment that does not rely on a separately started local polling process. Voice should also become more tolerant of accents, noisy shops and additional languages so merchants are not forced to adapt the way they speak to the software. Reminders fit naturally into that workflow too, but they should be controlled by the merchant: Talli can remember that James promised to pay Friday without deciding on its own that James should be contacted.
-
-Once the ledger has enough history, the more interesting opportunity is letting merchants use that history without turning Talli into traditional accounting software. Instead of digging through customer pages, they should be able to ask *“Who still owes me money?”*, *“What is overdue this week?”*, *“How much did customers pay back this month?”* or *“Show me Sarah's full history.”* Customer statements, overdue views, weekly or monthly summaries and exportable records all follow naturally from the financial state Talli is already maintaining.
-
-Further out, optional payment integrations could let an incoming payment be reconciled against an open credit instead of requiring the merchant to report every payment manually. Accounting exports and other business integrations could then reuse the same ledger rather than asking the merchant to maintain the record again somewhere else.
-
-The direction is not to make Talli an autonomous debt collector or another heavyweight business suite. It is to make the credit record increasingly useful while keeping the interaction that started the project intact:
-
-> **Say what happened. Talli keeps the record.**
-
-Built for the Micro1 Frontier Engineering Challenge.
-
-**[Try Talli](https://talli.onrender.com)**
+This repository continues that project and adds the WebMCP Challenge extension.

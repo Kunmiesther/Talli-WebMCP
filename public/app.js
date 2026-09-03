@@ -866,12 +866,14 @@ function renderProposalReview() {
     dom.proposalSummary.textContent = '';
     dom.proposalMessage.textContent = '';
     dom.proposalOperation.textContent = '';
+    dom.proposalOperation.hidden = true;
     dom.proposalExpires.textContent = '';
+    dom.proposalExpires.hidden = true;
     dom.proposalCandidates.innerHTML = '';
-    dom.proposalConfirm.hidden = false;
-    dom.proposalCancel.hidden = false;
-    dom.proposalConfirm.disabled = false;
-    dom.proposalCancel.disabled = false;
+    dom.proposalConfirm.hidden = true;
+    dom.proposalCancel.hidden = true;
+    dom.proposalConfirm.disabled = true;
+    dom.proposalCancel.disabled = true;
     dom.proposalLive.textContent = '';
     return;
   }
@@ -924,10 +926,14 @@ function renderProposalReview() {
           ? 'The ledger has not changed yet.'
           : (overlay?.message ?? '');
 
-  dom.proposalOperation.textContent = proposal ? actionLabel(proposal.operation) : '';
-  dom.proposalExpires.textContent = proposal?.expiresAt
+  const showProposalDetails = Boolean(proposal && proposal.status === 'pending');
+
+  dom.proposalOperation.textContent = showProposalDetails ? actionLabel(proposal.operation) : '';
+  dom.proposalOperation.hidden = !showProposalDetails;
+  dom.proposalExpires.textContent = showProposalDetails
     ? `Expires ${formatDateTime(proposal.expiresAt)}`
     : '';
+  dom.proposalExpires.hidden = !showProposalDetails;
 
   dom.proposalCandidates.innerHTML = '';
   if (overlayStatus === 'clarification_required' && overlay?.candidates?.length) {
@@ -950,7 +956,7 @@ function renderProposalReview() {
       .join('');
   }
 
-  const actionable = Boolean(proposal && proposal.status === 'pending');
+  const actionable = showProposalDetails;
   const busy = state.proposalPanel.busyAction !== null;
   dom.proposalConfirm.hidden = !actionable;
   dom.proposalCancel.hidden = !actionable;
