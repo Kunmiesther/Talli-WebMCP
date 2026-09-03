@@ -49,6 +49,68 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
+interface LoggedApiError {
+  errorName: string;
+  errorMessage: string;
+  errorCode: string | null;
+  errorDetails: string | null;
+  errorHint: string | null;
+}
+
+function extractLoggedApiError(error: unknown): LoggedApiError {
+  const fallbackName = error instanceof Error ? error.name : 'Error';
+  const fallbackMessage = error instanceof Error ? error.message : 'Unexpected error';
+  const record =
+    error && typeof error === 'object' && !Array.isArray(error)
+      ? (error as Record<string, unknown>)
+      : null;
+  const parsedPayload =
+    typeof fallbackMessage === 'string' && fallbackMessage.trim().startsWith('{')
+      ? (() => {
+          try {
+            const parsed = JSON.parse(fallbackMessage) as unknown;
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+              return null;
+            }
+            return parsed as Record<string, unknown>;
+          } catch {
+            return null;
+          }
+        })()
+      : null;
+  const payload = parsedPayload ?? record;
+
+  const errorName = (typeof payload?.name === 'string' && payload.name) || fallbackName || 'Error';
+  const errorMessage =
+    (typeof payload?.message === 'string' && payload.message.trim()) ||
+    fallbackMessage.trim() ||
+    'Unexpected error';
+  const errorCode =
+    (typeof payload?.code === 'string' && payload.code) ||
+    (typeof payload?.errorCode === 'string' && payload.errorCode) ||
+    null;
+  const errorDetails = (typeof payload?.details === 'string' && payload.details) || null;
+  const errorHint = (typeof payload?.hint === 'string' && payload.hint) || null;
+
+  return {
+    errorName,
+    errorMessage,
+    errorCode,
+    errorDetails,
+    errorHint,
+  };
+}
+
+function logUnexpectedApiError(request: Request, error: unknown): void {
+  const url = new URL(request.url);
+  const loggedError = extractLoggedApiError(error);
+  console.error('Talli API unexpected error', {
+    method: request.method,
+    pathname: url.pathname,
+    ...loggedError,
+  });
+}
+
 function parseCookies(header: string | null): Map<string, string> {
   const cookies = new Map<string, string>();
   if (!header) {
@@ -537,7 +599,7 @@ export async function handleTalliApiRequest(
   try {
     return await routeRequest(service, request, options);
   } catch (error) {
-    void error;
+    logUnexpectedApiError(request, error);
     return jsonResponse(500, {
       status: 'error',
       message: 'The ledger could not process that request safely.',

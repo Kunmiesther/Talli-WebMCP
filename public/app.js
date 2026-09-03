@@ -7,6 +7,7 @@ import {
   withCurrentProposal,
   withProposalOutcome,
 } from './proposal-workbench.js';
+import { handleTelegramLinkFailure, handleTelegramLinkResponse } from './telegram-link.js';
 import { abortTalliWebMcpTools, registerTalliWebMcpTools } from './webmcp-tools.js';
 
 const DEMO_SESSION_ID = 'default';
@@ -1570,10 +1571,20 @@ async function connectTelegram() {
 
   try {
     const response = await api.createTelegramLink();
+    const popupStatus = handleTelegramLinkResponse(telegramWindow, response.deepLink);
+    if (popupStatus.status === 'invalid') {
+      state.account.linkToken = null;
+      state.account.linkTokenStatus = 'idle';
+      state.account.deepLink = null;
+      setNotice('Talli could not create a Telegram link right now.');
+      renderAll();
+      return;
+    }
+
     state.account.linkToken = response.linkToken;
     state.account.deepLink = response.deepLink;
-    if (telegramWindow && response.deepLink) {
-      telegramWindow.location.href = response.deepLink;
+    if (popupStatus.status !== 'opened') {
+      setNotice('Telegram did not open. Use the link below to continue.');
     }
     renderAll();
 
@@ -1594,11 +1605,14 @@ async function connectTelegram() {
       await new Promise((resolve) => window.setTimeout(resolve, 1500));
     }
 
+    handleTelegramLinkFailure(telegramWindow);
     state.account.linkTokenStatus = 'idle';
     setNotice('Telegram link expired. Generate a fresh link and try again.');
   } catch (error) {
     console.error(error);
+    handleTelegramLinkFailure(telegramWindow);
     state.account.linkTokenStatus = 'idle';
+    state.account.linkToken = null;
     state.account.deepLink = null;
     setNotice('Talli could not create a Telegram link right now.');
   } finally {

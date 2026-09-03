@@ -22,8 +22,53 @@ interface SupabaseRow {
   [key: string]: unknown;
 }
 
+interface SupabaseErrorPayload {
+  code?: string;
+  details?: string;
+  hint?: string;
+  message?: string;
+}
+
 function stripTrailingSlash(value: string): string {
   return value.replace(/\/+$/, '');
+}
+
+function parseSupabaseErrorPayload(text: string): SupabaseErrorPayload | null {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+
+    const payload = parsed as Record<string, unknown>;
+    return {
+      code: typeof payload.code === 'string' ? payload.code : undefined,
+      details: typeof payload.details === 'string' ? payload.details : undefined,
+      hint: typeof payload.hint === 'string' ? payload.hint : undefined,
+      message: typeof payload.message === 'string' ? payload.message : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function createSupabaseRequestError(path: string, response: Response, text: string): Error {
+  const payload = parseSupabaseErrorPayload(text);
+  const message = payload?.message?.trim() || text.trim() || `Supabase request failed: ${path}`;
+  const error = new Error(message);
+  error.name = 'SupabaseRequestError';
+  if (payload?.code) {
+    (error as Error & { code?: string }).code = payload.code;
+  }
+  if (payload?.details) {
+    (error as Error & { details?: string }).details = payload.details;
+  }
+  if (payload?.hint) {
+    (error as Error & { hint?: string }).hint = payload.hint;
+  }
+  (error as Error & { path?: string }).path = path;
+  (error as Error & { status?: number }).status = response.status;
+  return error;
 }
 
 function defaultState(sessionId: string, timezone: string): SessionState {
@@ -83,7 +128,7 @@ export class SupabaseTalliSessionStore implements TalliStorageBackend {
     });
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(text || `Supabase request failed: ${path}`);
+      throw createSupabaseRequestError(path, response, text);
     }
     return response;
   }
@@ -98,9 +143,33 @@ export class SupabaseTalliSessionStore implements TalliStorageBackend {
     });
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(text || `Supabase select failed: ${path}`);
+      throw createSupabaseRequestError(path, response, text);
     }
     return (await response.json()) as SupabaseRow[];
+  }
+
+  private async ensureTalliUsers(userIds: Iterable<string>): Promise<void> {
+    const uniqueUserIds = [
+      ...new Set(
+        Array.from(userIds)
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0),
+      ),
+    ];
+    if (uniqueUserIds.length === 0) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    await this.request('talli_users?on_conflict=id', {
+      method: 'POST',
+      body: JSON.stringify(
+        uniqueUserIds.map((id) => ({
+          id,
+          updated_at: now,
+        })),
+      ),
+    });
   }
 
   private sessionKey(sessionId: string): string {
@@ -170,6 +239,11 @@ export class SupabaseTalliSessionStore implements TalliStorageBackend {
   }
 
   private async saveAuthState(state: AuthState): Promise<void> {
+    await this.ensureTalliUsers([
+      ...Object.values(state.telegramLinks).map((record) => record.userId),
+      ...Object.values(state.linkTokens).map((record) => record.userId),
+      ...Object.values(state.webSessions).map((record) => record.userId),
+    ]);
     await this.request('telegram_links?on_conflict=telegram_user_id', {
       method: 'POST',
       body: JSON.stringify(
@@ -211,6 +285,7 @@ export class SupabaseTalliSessionStore implements TalliStorageBackend {
   }
 
   private async upsertState(sessionId: string, state: SessionState): Promise<void> {
+    await this.ensureTalliUsers([sessionId]);
     await this.request('conversation_sessions?on_conflict=user_id', {
       method: 'POST',
       body: JSON.stringify([
@@ -269,6 +344,7 @@ export class SupabaseTalliSessionStore implements TalliStorageBackend {
 
   async saveState(statePath: string, state: SessionState): Promise<void> {
     const sessionId = this.sessionIdFromPath(statePath);
+    await this.ensureTalliUsers([sessionId]);
     await this.request('conversation_sessions?on_conflict=user_id', {
       method: 'POST',
       body: JSON.stringify([
@@ -296,6 +372,7 @@ export class SupabaseTalliSessionStore implements TalliStorageBackend {
       return;
     }
     const sessionId = this.sessionIdFromPath(ledgerPath);
+    await this.ensureTalliUsers([sessionId]);
     await this.request('ledger_events', {
       method: 'POST',
       body: JSON.stringify(
