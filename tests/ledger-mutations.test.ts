@@ -29,6 +29,7 @@ function customerEvent(input: {
   id: string;
   displayName: string;
   timestamp: string;
+  aliases?: string[];
 }): LedgerEvent {
   return {
     id: `${input.id}:created`,
@@ -37,7 +38,7 @@ function customerEvent(input: {
     actor: 'system',
     customerId: input.id,
     displayName: input.displayName,
-    aliases: [],
+    aliases: input.aliases ?? [],
   };
 }
 
@@ -227,6 +228,146 @@ describe('ledger mutation proposals', () => {
       expect(response.status).toBe('clarification_required');
       expect(response.candidates).toHaveLength(2);
       expect(await runtime.service.getPendingLedgerMutation('demo')).toBeNull();
+    } finally {
+      await runtime.cleanup();
+    }
+  });
+
+  it('clarifies ambiguous Ada payments without mutating the ledger or storing a proposal', async () => {
+    const runtime = await createRuntime();
+
+    try {
+      await seedLedger(runtime, [
+        customerEvent({
+          id: 'customer-ada-demo',
+          displayName: 'Ada Mensah Demo',
+          timestamp: '2026-08-30T08:00:00.000Z',
+        }),
+        customerEvent({
+          id: 'customer-ada-mensah',
+          displayName: 'Ada Mensah',
+          timestamp: '2026-08-30T09:00:00.000Z',
+        }),
+        customerEvent({
+          id: 'customer-ada-okafor',
+          displayName: 'Ada Okafor',
+          timestamp: '2026-08-30T10:00:00.000Z',
+        }),
+        obligationEvent({
+          id: 'obligation-ada-mensah',
+          customerId: 'customer-ada-mensah',
+          amountMinor: nairaToMinorUnits(50),
+          timestamp: '2026-08-30T11:00:00.000Z',
+        }),
+      ]);
+
+      const before = await runtime.service.getLedger('demo');
+      const response = expectClarificationRequired(
+        await runtime.service.prepareLedgerMutation('demo', {
+          operation: 'RECORD_PAYMENT',
+          customer: { kind: 'name', name: 'Ada', allowCreate: false },
+          amount: { value: 10, currency: 'NGN' },
+          settleRemaining: false,
+        }),
+      );
+      const after = await runtime.service.getLedger('demo');
+
+      expect(response.reasonCode).toBe('AMBIGUOUS_CUSTOMER');
+      expect(response.candidates).toHaveLength(3);
+      expect(response.candidates[0]).toMatchObject({
+        kind: 'customer',
+        customerId: expect.any(String),
+        displayName: expect.stringContaining('Ada'),
+        currency: 'NGN',
+      });
+      expect(await runtime.service.getPendingLedgerMutation('demo')).toBeNull();
+      expect(after).toEqual(before);
+    } finally {
+      await runtime.cleanup();
+    }
+  });
+
+  it('resolves exact Ada Mensah and alias references safely', async () => {
+    const runtime = await createRuntime();
+
+    try {
+      await seedLedger(runtime, [
+        customerEvent({
+          id: 'customer-ada-demo',
+          displayName: 'Ada Mensah Demo',
+          timestamp: '2026-08-30T08:00:00.000Z',
+        }),
+        customerEvent({
+          id: 'customer-ada-mensah',
+          displayName: 'Ada Mensah',
+          timestamp: '2026-08-30T09:00:00.000Z',
+        }),
+        customerEvent({
+          id: 'customer-ada-okafor',
+          displayName: 'Ada Okafor',
+          timestamp: '2026-08-30T10:00:00.000Z',
+        }),
+      ]);
+
+      const exact = expectConfirmationRequired(
+        await runtime.service.prepareLedgerMutation('demo', {
+          operation: 'CREATE_OBLIGATION',
+          customer: { kind: 'name', name: 'Ada Mensah', allowCreate: false },
+          amount: { value: 15, currency: 'NGN' },
+        }),
+      );
+      expect(exact.proposal.summary).toContain('Ada Mensah');
+
+      await seedLedger(runtime, [
+        customerEvent({
+          id: 'customer-sari',
+          displayName: 'Sarah',
+          timestamp: '2026-08-30T11:00:00.000Z',
+          aliases: ['Sari'],
+        }),
+      ]);
+      const aliasResponse = expectConfirmationRequired(
+        await runtime.service.prepareLedgerMutation('demo', {
+          operation: 'CREATE_OBLIGATION',
+          customer: { kind: 'name', name: 'Sari', allowCreate: false },
+          amount: { value: 15, currency: 'NGN' },
+        }),
+      );
+      expect(aliasResponse.proposal.summary).toContain('Sari');
+    } finally {
+      await runtime.cleanup();
+    }
+  });
+
+  it('confirms a payment using only an exact obligation id', async () => {
+    const runtime = await createRuntime();
+
+    try {
+      await seedLedger(runtime, [
+        customerEvent({
+          id: 'customer-ada-mensah',
+          displayName: 'Ada Mensah',
+          timestamp: '2026-08-30T09:00:00.000Z',
+        }),
+        obligationEvent({
+          id: 'obligation-ada-mensah',
+          customerId: 'customer-ada-mensah',
+          amountMinor: nairaToMinorUnits(50),
+          timestamp: '2026-08-30T10:00:00.000Z',
+        }),
+      ]);
+
+      const response = expectConfirmationRequired(
+        await runtime.service.prepareLedgerMutation('demo', {
+          operation: 'RECORD_PAYMENT',
+          obligation: { kind: 'id', obligationId: 'obligation-ada-mensah' },
+          amount: { value: 10, currency: 'NGN' },
+          settleRemaining: false,
+        }),
+      );
+
+      expect(response.proposal.summary).toContain('Ada Mensah');
+      expect(await runtime.service.getPendingLedgerMutation('demo')).not.toBeNull();
     } finally {
       await runtime.cleanup();
     }

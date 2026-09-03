@@ -356,20 +356,31 @@ export function resolveCustomerCandidates(
   }
 
   const name = normalizeLedgerName(customer.name);
-  const matches = snapshot.customers.filter((entry) => entry.normalizedNames.includes(name));
+  const exactMatches = snapshot.customers.filter((entry) => entry.normalizedNames.includes(name));
 
-  if (matches.length === 1) {
-    const single = matches[0];
+  if (exactMatches.length === 1) {
+    const single = exactMatches[0];
     if (!single) {
       return { kind: 'missing' };
     }
     return { kind: 'resolved', customer: single };
   }
 
-  if (matches.length > 1) {
+  if (exactMatches.length > 1) {
     return {
       kind: 'ambiguous',
-      candidateCustomerIds: matches.map((entry) => entry.id),
+      candidateCustomerIds: exactMatches.map((entry) => entry.id),
+    };
+  }
+
+  const partialMatches = snapshot.customers.filter((entry) =>
+    entry.normalizedNames.some((term) => term.includes(name) || name.includes(term)),
+  );
+
+  if (partialMatches.length > 0) {
+    return {
+      kind: 'ambiguous',
+      candidateCustomerIds: partialMatches.map((entry) => entry.id),
     };
   }
 
@@ -807,6 +818,32 @@ function applyRecordPayment(
     );
   }
 
+  if (obligationResolution.kind === 'resolved') {
+    const resolvedObligation = obligationResolution.obligation;
+    if (resolvedObligation && customer && customer.id !== resolvedObligation.customerId) {
+      return clarificationResult(
+        document,
+        snapshot,
+        {
+          type: 'REQUEST_CLARIFICATION',
+          question: 'Which customer made this payment?',
+          ambiguityKind: 'customer',
+          candidateCustomerIds: [resolvedObligation.customerId],
+          candidateObligationIds: [resolvedObligation.id],
+          permittedMutation: false,
+          evidence: [],
+          source: context.sourceText,
+        },
+        context,
+        'Customer and obligation did not match',
+      );
+    }
+
+    if (!customer) {
+      customer = snapshot.customers.find((entry) => entry.id === resolvedObligation.customerId);
+    }
+  }
+
   if (obligationResolution.kind === 'missing') {
     const implicitCustomer = action.customer
       ? ensureCustomer(document, snapshot, action.customer, context)
@@ -836,25 +873,6 @@ function applyRecordPayment(
     }
 
     const resolvedCustomer = customer;
-    if (!resolvedCustomer) {
-      return clarificationResult(
-        document,
-        snapshot,
-        {
-          type: 'REQUEST_CLARIFICATION',
-          question: 'Which customer made this payment?',
-          ambiguityKind: 'customer',
-          candidateCustomerIds: [],
-          candidateObligationIds: [],
-          permittedMutation: false,
-          evidence: [],
-          source: context.sourceText,
-        },
-        context,
-        'Missing customer reference',
-      );
-    }
-
     const customerObligations = snapshot.obligations.filter(
       (entry) => entry.customerId === resolvedCustomer.id,
     );
@@ -899,7 +917,7 @@ function applyRecordPayment(
         type: 'REQUEST_CLARIFICATION',
         question: 'I could not resolve the target debt for this payment.',
         ambiguityKind: 'obligation',
-        candidateCustomerIds: [],
+        candidateCustomerIds: customer ? [customer.id] : [],
         candidateObligationIds: [],
         permittedMutation: false,
         evidence: [],
@@ -910,8 +928,7 @@ function applyRecordPayment(
     );
   }
 
-  const resolvedCustomer = customer;
-  if (!resolvedCustomer) {
+  if (!customer) {
     return clarificationResult(
       document,
       snapshot,
@@ -930,25 +947,8 @@ function applyRecordPayment(
     );
   }
 
+  const resolvedCustomer = customer;
   const obligation = obligationResolution.obligation;
-  if (!obligation) {
-    return clarificationResult(
-      document,
-      snapshot,
-      {
-        type: 'REQUEST_CLARIFICATION',
-        question: 'I could not resolve the target debt for this payment.',
-        ambiguityKind: 'obligation',
-        candidateCustomerIds: [resolvedCustomer.id],
-        candidateObligationIds: [],
-        permittedMutation: false,
-        evidence: [],
-        source: context.sourceText,
-      },
-      context,
-      'Missing obligation reference',
-    );
-  }
   const amountMinor =
     action.amountMinor ?? (action.settleRemaining ? obligation.outstandingMinor : undefined);
   if (amountMinor === undefined) {

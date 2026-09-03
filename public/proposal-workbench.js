@@ -180,6 +180,7 @@ export function withProposalOutcome(state, outcome) {
     case 'clarification_required':
       return {
         ...state,
+        activeProposal: null,
         overlay: {
           status: 'clarification_required',
           message: outcome.message,
@@ -192,6 +193,7 @@ export function withProposalOutcome(state, outcome) {
     case 'rejected':
       return {
         ...state,
+        activeProposal: null,
         overlay: {
           status: 'rejected',
           message: outcome.message,

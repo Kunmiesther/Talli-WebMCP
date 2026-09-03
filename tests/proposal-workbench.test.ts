@@ -177,7 +177,7 @@ describe('proposal workbench state helpers', () => {
     expect(isProposalActionable(expired)).toBe(false);
   });
 
-  it('stores overlay outcomes without replacing a pending proposal on clarification', () => {
+  it('clears the actionable proposal on clarification', () => {
     const current = withCurrentProposal(createProposalWorkbenchState(), createProposal());
     const next = withProposalOutcome(current, {
       status: 'clarification_required',
@@ -188,10 +188,11 @@ describe('proposal workbench state helpers', () => {
       ],
     });
 
-    expect(next.activeProposal?.proposalId).toBe('proposal-1');
+    expect(next.activeProposal).toBeNull();
     expect(next.overlay).toMatchObject({
       status: 'clarification_required',
       reasonCode: 'AMBIGUOUS_CUSTOMER',
     });
+    expect(isProposalActionable(next)).toBe(false);
   });
 });

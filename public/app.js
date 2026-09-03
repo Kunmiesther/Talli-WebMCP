@@ -483,7 +483,15 @@ function renderResponseBlock(response) {
       `<div class="turn-chip">
         <span class="turn-chip__label">Candidates</span>
         <span class="turn-chip__copy">${escapeHtml(
-          response.clarification.candidates.map((candidate) => candidate.displayName).join(', '),
+          response.clarification.candidates
+            .map((candidate) => {
+              const balance =
+                candidate.kind === 'customer' && typeof candidate.outstandingMinor === 'number'
+                  ? ` · ${formatMoney(candidate.outstandingMinor)}`
+                  : '';
+              return `${candidate.displayName}${balance}`;
+            })
+            .join(', '),
         )}</span>
       </div>`,
     );
@@ -520,22 +528,28 @@ function renderClarification() {
     dom.clarificationPanel.hidden = true;
     dom.clarificationQuestion.textContent = '';
     dom.clarificationCandidates.innerHTML = '';
-    dom.clarificationTitle.textContent = 'Talli needs one safe answer';
+    dom.clarificationTitle.textContent = 'Talli needs clarification';
     return;
   }
 
   dom.clarificationPanel.hidden = false;
-  dom.clarificationTitle.textContent = 'Clarification required';
+  dom.clarificationTitle.textContent = 'Talli needs clarification';
   dom.clarificationQuestion.textContent = state.clarification.response.message;
   const candidates = state.clarification.response.clarification?.candidates ?? [];
   dom.clarificationCandidates.innerHTML = candidates
     .map((candidate) => {
       const kindLabel = candidate.kind === 'obligation' ? 'Debt' : 'Customer';
+      const balanceText =
+        candidate.kind === 'customer' && typeof candidate.outstandingMinor === 'number'
+          ? ` · ${formatMoney(candidate.outstandingMinor)}`
+          : '';
       const suggestion = buildCandidateSuggestion(candidate);
       return `
         <button class="candidate" type="button" data-candidate-suggestion="${escapeHtml(suggestion)}">
           <strong class="candidate__title">${escapeHtml(candidate.displayName)}</strong>
-          <span class="candidate__detail">${escapeHtml(kindLabel)} · tap to fill a safe follow-up</span>
+          <span class="candidate__detail">${escapeHtml(
+            `${kindLabel}${balanceText} · no ledger change yet`,
+          )}</span>
         </button>
       `;
     })

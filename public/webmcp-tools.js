@@ -110,6 +110,16 @@ function obligationMutationRefSchema() {
   };
 }
 
+function exactObligationMutationRefSchema() {
+  return strictObject(
+    {
+      kind: { type: 'string', const: 'id', description: 'Use an exact obligation id.' },
+      obligationId: stringSchema('Exact obligation id.', 1),
+    },
+    ['kind', 'obligationId'],
+  );
+}
+
 function humanMoneySchema() {
   return strictObject(
     {
@@ -196,12 +206,13 @@ function buildBalanceIndex(ledger) {
   return balances;
 }
 
-function candidateFromCustomer(customer, balanceMinor) {
+function candidateFromCustomer(customer, balanceMinor, currency) {
   return {
     customerId: customer.id,
     displayName: customer.displayName,
     aliases: customer.aliases?.length ? customer.aliases.slice(0, 2) : [],
     outstandingMinor: balanceMinor,
+    currency,
   };
 }
 
@@ -300,8 +311,13 @@ function buildProposalResponseMessage(response) {
       message: response.message,
       candidates: response.candidates.map((candidate) => ({
         kind: candidate.kind,
-        id: candidate.id,
+        customerId: candidate.customerId ?? null,
+        obligationId: candidate.obligationId ?? null,
         displayName: candidate.displayName,
+        aliases: candidate.aliases ?? [],
+        outstandingMinor:
+          typeof candidate.outstandingMinor === 'number' ? candidate.outstandingMinor : null,
+        currency: candidate.currency ?? null,
       })),
       ledgerChanged: false,
     };
@@ -349,7 +365,9 @@ export function createTalliWebMcpTools(deps) {
         continue;
       }
 
-      matches.push(candidateFromCustomer(customer, balances.get(customer.id) ?? 0));
+      matches.push(
+        candidateFromCustomer(customer, balances.get(customer.id) ?? 0, ledger.currency),
+      );
     }
 
     return matches.sort((left, right) => {
@@ -371,6 +389,7 @@ export function createTalliWebMcpTools(deps) {
         displayName: candidate.displayName,
         aliases: candidate.aliases,
         outstandingMinor: candidate.outstandingMinor,
+        currency: candidate.currency,
       })),
       truncated: candidates.length > MAX_BOUND_LIST,
     });
@@ -654,11 +673,13 @@ export function createTalliWebMcpTools(deps) {
           ),
         );
       } else if (response.status === 'clarification_required') {
-        onActivity(
-          createProposalActivityEntry(
-            formatProposalActivityMessage('clarification', input.operation),
-          ),
-        );
+        const clarificationMessage =
+          response.reasonCode === 'AMBIGUOUS_CUSTOMER'
+            ? 'Talli found multiple matching customers.'
+            : response.reasonCode === 'AMBIGUOUS_OBLIGATION'
+              ? 'Talli found multiple matching debts.'
+              : formatProposalActivityMessage('clarification', input.operation);
+        onActivity(createProposalActivityEntry(clarificationMessage));
       } else if (response.status === 'rejected') {
         onActivity(
           createProposalActivityEntry(formatProposalActivityMessage('rejected', input.operation)),
@@ -818,7 +839,7 @@ export function createTalliWebMcpTools(deps) {
             {
               operation: { type: 'string', const: 'RECORD_PAYMENT' },
               customer: customerMutationRefSchema(),
-              obligation: obligationMutationRefSchema(),
+              obligation: exactObligationMutationRefSchema(),
               amount: humanMoneySchema(),
               settleRemaining: {
                 type: 'boolean',
@@ -826,12 +847,50 @@ export function createTalliWebMcpTools(deps) {
                 default: false,
               },
             },
-            ['operation', 'settleRemaining'],
+            ['operation', 'customer', 'amount'],
+          ),
+          strictObject(
+            {
+              operation: { type: 'string', const: 'RECORD_PAYMENT' },
+              customer: customerMutationRefSchema(),
+              obligation: exactObligationMutationRefSchema(),
+              settleRemaining: {
+                type: 'boolean',
+                description: 'Set true to record the remaining balance.',
+                const: true,
+              },
+            },
+            ['operation', 'customer', 'settleRemaining'],
+          ),
+          strictObject(
+            {
+              operation: { type: 'string', const: 'RECORD_PAYMENT' },
+              obligation: exactObligationMutationRefSchema(),
+              amount: humanMoneySchema(),
+              settleRemaining: {
+                type: 'boolean',
+                description: 'Set true to record the remaining balance.',
+                default: false,
+              },
+            },
+            ['operation', 'obligation', 'amount'],
+          ),
+          strictObject(
+            {
+              operation: { type: 'string', const: 'RECORD_PAYMENT' },
+              obligation: exactObligationMutationRefSchema(),
+              settleRemaining: {
+                type: 'boolean',
+                description: 'Set true to record the remaining balance.',
+                const: true,
+              },
+            },
+            ['operation', 'obligation', 'settleRemaining'],
           ),
           strictObject(
             {
               operation: { type: 'string', const: 'SETTLE_OBLIGATION' },
-              obligation: obligationMutationRefSchema(),
+              obligation: exactObligationMutationRefSchema(),
               amount: humanMoneySchema(),
             },
             ['operation', 'obligation'],

@@ -63,6 +63,13 @@ export const strictObligationRefSchema = z.discriminatedUnion('kind', [
     .strict(),
 ]);
 
+export const exactObligationRefSchema = z
+  .object({
+    kind: z.literal('id'),
+    obligationId: z.string().min(1),
+  })
+  .strict();
+
 export const prepareCreateCreditSchema = z
   .object({
     operation: z.literal('CREATE_OBLIGATION'),
@@ -72,37 +79,90 @@ export const prepareCreateCreditSchema = z
   })
   .strict();
 
-export const prepareRecordPaymentSchema = z
+const prepareRecordPaymentCustomerSchema = z
   .object({
     operation: z.literal('RECORD_PAYMENT'),
-    customer: strictCustomerRefSchema.optional(),
-    obligation: strictObligationRefSchema.optional(),
-    amount: humanMoneySchema.optional(),
-    settleRemaining: z.boolean().default(false),
+    customer: strictCustomerRefSchema,
+    obligation: exactObligationRefSchema.optional(),
+    amount: humanMoneySchema,
+    settleRemaining: z.literal(false).default(false),
   })
   .strict();
+
+const prepareRecordPaymentCustomerSettleSchema = z
+  .object({
+    operation: z.literal('RECORD_PAYMENT'),
+    customer: strictCustomerRefSchema,
+    obligation: exactObligationRefSchema.optional(),
+    amount: humanMoneySchema.optional(),
+    settleRemaining: z.literal(true).default(true),
+  })
+  .strict();
+
+const prepareRecordPaymentObligationSchema = z
+  .object({
+    operation: z.literal('RECORD_PAYMENT'),
+    obligation: exactObligationRefSchema,
+    amount: humanMoneySchema,
+    settleRemaining: z.literal(false).default(false),
+  })
+  .strict();
+
+const prepareRecordPaymentObligationSettleSchema = z
+  .object({
+    operation: z.literal('RECORD_PAYMENT'),
+    obligation: exactObligationRefSchema,
+    amount: humanMoneySchema.optional(),
+    settleRemaining: z.literal(true).default(true),
+  })
+  .strict();
+
+export const prepareRecordPaymentSchema = z.union([
+  prepareRecordPaymentCustomerSchema,
+  prepareRecordPaymentCustomerSettleSchema,
+  prepareRecordPaymentObligationSchema,
+  prepareRecordPaymentObligationSettleSchema,
+]);
 
 export const prepareSettleObligationSchema = z
   .object({
     operation: z.literal('SETTLE_OBLIGATION'),
-    obligation: strictObligationRefSchema,
+    obligation: exactObligationRefSchema,
     amount: humanMoneySchema.optional(),
   })
   .strict();
 
-export const prepareLedgerMutationRequestSchema = z.discriminatedUnion('operation', [
+export const prepareLedgerMutationRequestSchema = z.union([
   prepareCreateCreditSchema,
   prepareRecordPaymentSchema,
   prepareSettleObligationSchema,
 ]);
 
-export const proposalCandidateSchema = z
+export const proposalCustomerCandidateSchema = z
   .object({
-    kind: z.enum(['customer', 'obligation']),
-    id: z.string().min(1),
+    kind: z.literal('customer'),
+    customerId: z.string().min(1),
     displayName: z.string().min(1),
+    aliases: z.array(z.string().min(1)).max(2).optional(),
+    outstandingMinor: z.number().int().nonnegative().optional(),
+    currency: z.string().min(1).optional(),
   })
   .strict();
+
+export const proposalObligationCandidateSchema = z
+  .object({
+    kind: z.literal('obligation'),
+    obligationId: z.string().min(1),
+    displayName: z.string().min(1),
+    outstandingMinor: z.number().int().nonnegative().optional(),
+    currency: z.string().min(1).optional(),
+  })
+  .strict();
+
+export const proposalCandidateSchema = z.union([
+  proposalCustomerCandidateSchema,
+  proposalObligationCandidateSchema,
+]);
 
 export type PrepareLedgerMutationRequest = z.infer<typeof prepareLedgerMutationRequestSchema>;
 

@@ -36,6 +36,34 @@ function assertStrictObjectSchema(schema: unknown) {
   }
 }
 
+function collectStringConsts(schema: unknown, values = new Set<string>()) {
+  if (!isRecord(schema)) {
+    return values;
+  }
+
+  if (typeof schema.const === 'string') {
+    values.add(schema.const);
+  }
+
+  if (Array.isArray(schema.oneOf)) {
+    for (const branch of schema.oneOf) {
+      collectStringConsts(branch, values);
+    }
+  }
+
+  if (isRecord(schema.properties)) {
+    for (const child of Object.values(schema.properties)) {
+      collectStringConsts(child, values);
+    }
+  }
+
+  if ('items' in schema) {
+    collectStringConsts(schema.items, values);
+  }
+
+  return values;
+}
+
 function createLedgerFixture() {
   return {
     currency: 'NGN',
@@ -278,6 +306,13 @@ describe('browser WebMCP registration', () => {
       assertStrictObjectSchema(tool.inputSchema);
     }
 
+    const prepareSchema = registered.find((entry) => entry.tool.name === 'prepare_ledger_mutation')
+      ?.tool.inputSchema;
+    const schemaConsts = collectStringConsts(prepareSchema);
+    expect(schemaConsts.has('latestOpenForCustomer')).toBe(false);
+    expect(schemaConsts.has('latestForCustomer')).toBe(false);
+    expect(schemaConsts.has('RECORD_PAYMENT')).toBe(true);
+
     const readTools = registered.slice(0, 5);
     for (const { tool } of readTools) {
       expect(tool.annotations.readOnlyHint).toBe(true);
@@ -487,6 +522,153 @@ describe('browser WebMCP registration', () => {
     expect(result.status).toBe('clarification_required');
     expect(result.reasonCode).toBe('AMBIGUOUS_CUSTOMER');
     expect(result.candidates).toHaveLength(2);
+  });
+
+  it('clarifies an Ada payment with the top-level customer reference only', async () => {
+    const requests: Array<{ path: string; body: unknown }> = [];
+    const activities: unknown[] = [];
+    const requestJson = vi.fn(async (path, options = {}) => {
+      requests.push({
+        path,
+        body: options.body ? JSON.parse(options.body) : null,
+      });
+
+      if (path.startsWith('/api/proposals/prepare')) {
+        return {
+          status: 'clarification_required',
+          reasonCode: 'AMBIGUOUS_CUSTOMER',
+          message: 'Multiple customers match that reference. Talli did not guess.',
+          candidates: [
+            {
+              kind: 'customer',
+              customerId: 'customer-ada-mensah-demo',
+              displayName: 'Ada Mensah Demo',
+              aliases: [],
+              outstandingMinor: 6500,
+              currency: 'NGN',
+            },
+            {
+              kind: 'customer',
+              customerId: 'customer-ada-mensah',
+              displayName: 'Ada Mensah',
+              aliases: ['Ada'],
+              outstandingMinor: 5000,
+              currency: 'NGN',
+            },
+          ],
+          ledgerChanged: false,
+        };
+      }
+
+      throw new Error(`Unexpected request: ${path}`);
+    });
+
+    const tools = createTalliWebMcpTools({
+      requestJson,
+      getSessionId: () => 'demo',
+      onActivity: (value: unknown) => activities.push(value),
+      onProposalOutcome: vi.fn(),
+    });
+    const prepareTool = requireTool(tools[5]);
+
+    const result = parseResult(
+      await prepareTool.execute(
+        {
+          operation: 'RECORD_PAYMENT',
+          customer: { kind: 'name', name: 'Ada', allowCreate: false },
+          amount: { value: 10, currency: 'NGN' },
+          settleRemaining: false,
+        },
+        { signal: new AbortController().signal },
+      ),
+    );
+
+    expect(result).toMatchObject({
+      status: 'clarification_required',
+      reasonCode: 'AMBIGUOUS_CUSTOMER',
+      ledgerChanged: false,
+    });
+    expect(result.candidates).toHaveLength(2);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.body).toMatchObject({
+      operation: 'RECORD_PAYMENT',
+      customer: { kind: 'name', name: 'Ada', allowCreate: false },
+      amount: { value: 10, currency: 'NGN' },
+      settleRemaining: false,
+    });
+    expect(JSON.stringify(requests[0]?.body)).not.toContain('latestOpenForCustomer');
+    expect(activities).toHaveLength(1);
+    expect(activities[0]).toMatchObject({
+      message: 'Talli found multiple matching customers.',
+    });
+  });
+
+  it('allows exact obligation payments without duplicating the customer in the request body', async () => {
+    const requests: Array<{ path: string; body: unknown }> = [];
+    const requestJson = vi.fn(async (path, options = {}) => {
+      requests.push({
+        path,
+        body: options.body ? JSON.parse(options.body) : null,
+      });
+
+      if (path.startsWith('/api/proposals/prepare')) {
+        return {
+          status: 'confirmation_required',
+          proposal: {
+            proposalId: 'proposal-4',
+            operation: 'RECORD_PAYMENT',
+            summary: 'Record payment of NGN 10 for Ada Mensah.',
+            status: 'pending',
+            createdAt: '2026-09-02T10:00:00.000Z',
+            expiresAt: '2026-09-02T10:10:00.000Z',
+            confirmedAt: null,
+            cancelledAt: null,
+          },
+          message: 'Review this proposal before confirming.',
+        };
+      }
+
+      throw new Error(`Unexpected request: ${path}`);
+    });
+
+    const outcomes: Array<unknown> = [];
+    const tools = createTalliWebMcpTools({
+      requestJson,
+      getSessionId: () => 'demo',
+      onActivity: vi.fn(),
+      onProposalOutcome: (value: unknown) => outcomes.push(value),
+    });
+    const prepareTool = requireTool(tools[5]);
+
+    const result = parseResult(
+      await prepareTool.execute(
+        {
+          operation: 'RECORD_PAYMENT',
+          obligation: { kind: 'id', obligationId: 'obligation-ada-mensah' },
+          amount: { value: 10, currency: 'NGN' },
+          settleRemaining: false,
+        },
+        { signal: new AbortController().signal },
+      ),
+    );
+
+    expect(result).toMatchObject({
+      status: 'confirmation_required',
+      proposalId: 'proposal-4',
+      operation: 'RECORD_PAYMENT',
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.body).toMatchObject({
+      operation: 'RECORD_PAYMENT',
+      obligation: { kind: 'id', obligationId: 'obligation-ada-mensah' },
+      amount: { value: 10, currency: 'NGN' },
+      settleRemaining: false,
+    });
+    expect(JSON.stringify(requests[0]?.body)).not.toContain('customer');
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({
+      status: 'confirmation_required',
+    });
   });
 
   it('prepares a proposal without calling confirmation', async () => {

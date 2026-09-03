@@ -61,8 +61,12 @@ export interface TalliClarificationResponse {
   question: string;
   candidates: Array<{
     kind: 'customer' | 'obligation';
-    id: string;
+    customerId?: string;
+    obligationId?: string;
     displayName: string;
+    aliases?: string[];
+    outstandingMinor?: number;
+    currency?: string;
     reason?: string;
   }>;
 }
@@ -255,8 +259,13 @@ function formatClarification(
     }
     candidates.push({
       kind: 'customer',
-      id: customer.id,
+      customerId: customer.id,
       displayName: customer.displayName,
+      aliases: customer.aliases.slice(0, 2),
+      outstandingMinor: snapshot.obligations
+        .filter((obligation) => obligation.customerId === customer.id)
+        .reduce((sum, obligation) => sum + obligation.outstandingMinor, 0),
+      currency: snapshot.currency,
     });
   }
 
@@ -267,11 +276,13 @@ function formatClarification(
     }
     candidates.push({
       kind: 'obligation',
-      id: obligation.id,
+      obligationId: obligation.id,
       displayName: `${obligation.customerName} ${formatMoney(
         obligation.outstandingMinor,
         snapshot.currency,
       )} remaining`,
+      outstandingMinor: obligation.outstandingMinor,
+      currency: snapshot.currency,
     });
   }
 
@@ -479,8 +490,13 @@ function buildClarificationCandidates(
     candidates.push(
       proposalCandidateSchema.parse({
         kind: 'customer',
-        id: customer.id,
+        customerId: customer.id,
         displayName: customer.displayName,
+        aliases: customer.aliases.slice(0, 2),
+        outstandingMinor: snapshot.obligations
+          .filter((obligation) => obligation.customerId === customer.id)
+          .reduce((sum, obligation) => sum + obligation.outstandingMinor, 0),
+        currency: snapshot.currency,
       }),
     );
   }
@@ -493,11 +509,13 @@ function buildClarificationCandidates(
     candidates.push(
       proposalCandidateSchema.parse({
         kind: 'obligation',
-        id: obligation.id,
+        obligationId: obligation.id,
         displayName: `${obligation.customerName} ${formatProposalMoney(
           obligation.outstandingMinor,
           snapshot.currency,
         )} remaining`,
+        outstandingMinor: obligation.outstandingMinor,
+        currency: snapshot.currency,
       }),
     );
   }
@@ -1056,17 +1074,18 @@ export class TalliService {
         }) as ProposalAction;
       }
       case 'RECORD_PAYMENT': {
+        const customer = 'customer' in input ? input.customer : undefined;
         if (input.settleRemaining && input.amount) {
           throw new Error('Record payment requests must omit amount when settleRemaining is true.');
         }
 
-        if (input.customer?.kind === 'name' && input.customer.allowCreate) {
+        if (customer?.kind === 'name' && customer.allowCreate) {
           throw new Error('Payment requests must resolve to an existing customer.');
         }
 
         return ledgerActionSchema.parse({
           type: 'RECORD_PAYMENT',
-          customer: input.customer,
+          customer,
           obligation: input.obligation,
           amountMinor: input.amount ? humanMoneyToMinorUnits(input.amount) : undefined,
           settleRemaining: input.settleRemaining,

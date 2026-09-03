@@ -10,6 +10,7 @@ describe('public app renderer source', () => {
     expect(appSource).toContain("dom.proposalConfirm?.addEventListener('click'");
     expect(appSource).toContain('registerTalliWebMcpTools');
     expect(appSource).toContain('abortTalliWebMcpTools');
+    expect(appSource).toContain('Talli needs clarification');
     expect(appSource).not.toContain('confirm_ledger_mutation');
 
     const html = readFileSync(resolve(process.cwd(), 'public/index.html'), 'utf8');
