@@ -71,6 +71,25 @@ function createSupabaseRequestError(path: string, response: Response, text: stri
   return error;
 }
 
+function buildPreferHeader(path: string, preferValue: string | null): string {
+  const preferences = new Set(
+    (preferValue ?? 'return=minimal')
+      .split(',')
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0),
+  );
+
+  if (path.includes('?on_conflict=')) {
+    preferences.add('resolution=merge-duplicates');
+  }
+
+  if (![...preferences].some((value) => value.startsWith('return='))) {
+    preferences.add('return=minimal');
+  }
+
+  return [...preferences].join(',');
+}
+
 function defaultState(sessionId: string, timezone: string): SessionState {
   const now = new Date().toISOString();
   return {
@@ -116,15 +135,14 @@ export class SupabaseTalliSessionStore implements TalliStorageBackend {
   }
 
   private async request(path: string, init: RequestInit = {}) {
+    const headers = new Headers(init.headers ?? {});
+    headers.set('apikey', this.supabaseServiceRoleKey);
+    headers.set('Authorization', `Bearer ${this.supabaseServiceRoleKey}`);
+    headers.set('Content-Type', headers.get('Content-Type') ?? 'application/json');
+    headers.set('Prefer', buildPreferHeader(path, headers.get('Prefer')));
     const response = await fetch(`${this.supabaseUrl}/rest/v1/${path}`, {
       ...init,
-      headers: {
-        apikey: this.supabaseServiceRoleKey,
-        Authorization: `Bearer ${this.supabaseServiceRoleKey}`,
-        'Content-Type': 'application/json',
-        Prefer: 'return=minimal',
-        ...(init.headers ?? {}),
-      },
+      headers,
     });
     if (!response.ok) {
       const text = await response.text();
