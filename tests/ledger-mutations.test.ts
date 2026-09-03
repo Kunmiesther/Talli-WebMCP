@@ -171,9 +171,20 @@ describe('ledger mutation proposals', () => {
       expect(before).toEqual(after);
       expect(await runtime.service.getPendingLedgerMutation('demo')).not.toBeNull();
 
+      const linkedToken = await runtime.service.createTelegramLinkToken('demo');
+      const consumed = await runtime.service.consumeTelegramLinkToken({
+        token: linkedToken.token,
+        telegramUserId: '999999',
+      });
+      expect(consumed).not.toBeNull();
+
       const current = await handleTalliApiRequest(
         runtime.service,
-        new Request('http://localhost/api/proposals/current'),
+        new Request('http://localhost/api/proposals/current', {
+          headers: {
+            cookie: `talli_session=${consumed?.webSessionToken ?? ''}`,
+          },
+        }),
       );
       expect(current.status).toBe(200);
       expect(await current.json()).toMatchObject({
@@ -374,7 +385,7 @@ describe('ledger mutation proposals', () => {
     } finally {
       await runtime.cleanup();
     }
-  });
+  }, 10_000);
 
   it('confirms a stored action exactly once', async () => {
     const runtime = await createRuntime();

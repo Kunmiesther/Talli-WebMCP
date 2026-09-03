@@ -455,6 +455,7 @@ describe('browser WebMCP registration', () => {
     expect(toolOutputs.length).toBeGreaterThan(0);
     expect(requests.some((entry) => entry.path.includes('/api/proposals/prepare'))).toBe(true);
     expect(requests.some((entry) => entry.path.includes('/api/proposals/cancel'))).toBe(true);
+    expect(requests.every((entry) => !entry.path.includes('sessionId='))).toBe(true);
     for (const value of [summary, search, balance, history, overdue, prepare, cancel]) {
       expect(typeof JSON.stringify(value)).toBe('string');
     }

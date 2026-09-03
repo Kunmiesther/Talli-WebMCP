@@ -155,11 +155,6 @@ function normalizeQuery(value) {
     .trim();
 }
 
-function withSessionQuery(path, getSessionId) {
-  const separator = path.includes('?') ? '&' : '?';
-  return `${path}${separator}sessionId=${encodeURIComponent(getSessionId())}`;
-}
-
 function safeReasonCode(error, fallback = 'REQUEST_FAILED') {
   if (error && typeof error === 'object' && error.body && typeof error.body === 'object') {
     if (typeof error.body.reasonCode === 'string') {
@@ -344,19 +339,16 @@ function formatConfirmStateMessage(response) {
 }
 
 export function createTalliWebMcpTools(deps) {
-  const { requestJson, getSessionId, onActivity = () => {}, onProposalOutcome = () => {} } = deps;
+  const { requestJson, onActivity = () => {}, onProposalOutcome = () => {} } = deps;
 
   async function ledgerSnapshot(signal) {
-    return requestJson(withSessionQuery('/api/ledger', getSessionId), { signal });
+    return requestJson('/api/ledger', { signal });
   }
 
   async function customerHistory(customerId, signal) {
-    return requestJson(
-      withSessionQuery(`/api/customers/${encodeURIComponent(customerId)}`, getSessionId),
-      {
-        signal,
-      },
-    );
+    return requestJson(`/api/customers/${encodeURIComponent(customerId)}`, {
+      signal,
+    });
   }
 
   function resolveCustomerCandidates(ledger, input) {
@@ -669,7 +661,7 @@ export function createTalliWebMcpTools(deps) {
 
   async function prepareLedgerMutationExecute(input, { signal }) {
     try {
-      const response = await requestJson(withSessionQuery('/api/proposals/prepare', getSessionId), {
+      const response = await requestJson('/api/proposals/prepare', {
         method: 'POST',
         body: JSON.stringify(input),
         signal,
@@ -705,7 +697,7 @@ export function createTalliWebMcpTools(deps) {
         });
       }
 
-      const response = await requestJson(withSessionQuery('/api/proposals/cancel', getSessionId), {
+      const response = await requestJson('/api/proposals/cancel', {
         method: 'POST',
         body: JSON.stringify({ proposalId: input.proposalId }),
         signal,

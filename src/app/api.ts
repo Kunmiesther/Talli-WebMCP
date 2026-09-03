@@ -1,8 +1,10 @@
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { type IncomingMessage, type Server, createServer } from 'node:http';
 import { dirname, extname, relative, resolve } from 'node:path';
 import { URL, fileURLToPath } from 'node:url';
+import { z } from 'zod';
 import {
   buildTelegramDeepLink,
   readTelegramWebhookSecret,
@@ -37,6 +39,25 @@ const SAME_ORIGIN_RESPONSE_HEADERS = {
   'Origin-Agent-Cluster': '?1',
   'Permissions-Policy': 'tools=(self)',
 };
+const TALLI_SESSION_COOKIE_NAME = 'talli_session';
+const TALLI_SESSION_COOKIE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
+const TEST_SESSION_SECRET = 'talli-test-session-secret';
+
+const messageRequestSchema = z
+  .object({
+    text: z.string().min(1),
+    referenceTime: z.string().min(1).optional(),
+    timezone: z.string().min(1).optional(),
+    language: z.enum(['en', 'pcm', 'mixed']).optional(),
+    origin: z.enum(['web', 'telegram']).optional(),
+  })
+  .strict();
+const currencyRequestSchema = z
+  .object({
+    currency: z.string().min(1),
+  })
+  .strict();
+const emptyRequestSchema = z.object({}).strict();
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body, null, 2), {
@@ -47,6 +68,14 @@ function jsonResponse(status: number, body: unknown): Response {
       ...SAME_ORIGIN_RESPONSE_HEADERS,
     },
   });
+}
+
+function jsonResponseWithCookie(status: number, body: unknown, setCookie: string | null): Response {
+  const response = jsonResponse(status, body);
+  if (setCookie) {
+    response.headers.set('Set-Cookie', setCookie);
+  }
+  return response;
 }
 
 interface LoggedApiError {
@@ -160,6 +189,75 @@ function isSecureRequest(request: Request): boolean {
   return new URL(request.url).protocol === 'https:';
 }
 
+function getSessionCookieSecret(): string {
+  const secret = process.env.SESSION_SECRET?.trim();
+  if (secret) {
+    return secret;
+  }
+
+  if (process.env.NODE_ENV === 'test' || process.env.VITEST) {
+    return TEST_SESSION_SECRET;
+  }
+
+  throw new Error('SESSION_SECRET is required to sign browser sessions.');
+}
+
+function signSessionCookie(sessionId: string): string {
+  const payload = Buffer.from(sessionId, 'utf8').toString('base64url');
+  const signature = createHmac('sha256', getSessionCookieSecret())
+    .update(`talli_session:${payload}`)
+    .digest('base64url');
+  return `v1.${payload}.${signature}`;
+}
+
+function verifySessionCookie(value: string): string | null {
+  const parts = value.split('.');
+  if (parts.length !== 3 || parts[0] !== 'v1') {
+    return null;
+  }
+
+  const [, payload, signature] = parts;
+  if (!payload || !signature) {
+    return null;
+  }
+
+  let sessionId: string;
+  try {
+    sessionId = Buffer.from(payload, 'base64url').toString('utf8');
+  } catch {
+    return null;
+  }
+
+  if (!sessionId.trim()) {
+    return null;
+  }
+
+  const expectedSignature = createHmac('sha256', getSessionCookieSecret())
+    .update(`talli_session:${payload}`)
+    .digest('base64url');
+  const signatureBuffer = Buffer.from(signature, 'utf8');
+  const expectedBuffer = Buffer.from(expectedSignature, 'utf8');
+  if (
+    signatureBuffer.length !== expectedBuffer.length ||
+    !timingSafeEqual(signatureBuffer, expectedBuffer)
+  ) {
+    return null;
+  }
+
+  return sessionId;
+}
+
+function buildSessionCookie(sessionId: string, request: Request): string {
+  return serializeCookie({
+    name: TALLI_SESSION_COOKIE_NAME,
+    value: signSessionCookie(sessionId),
+    httpOnly: true,
+    sameSite: 'Lax',
+    secure: isSecureRequest(request),
+    maxAgeSeconds: TALLI_SESSION_COOKIE_MAX_AGE_SECONDS,
+  });
+}
+
 function normalizeTelegramUsername(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
   if (!trimmed) {
@@ -168,23 +266,46 @@ function normalizeTelegramUsername(value: string | null | undefined): string | n
   return trimmed.replace(/^@+/, '');
 }
 
-async function resolveSessionId(service: TalliService, request: Request): Promise<string> {
-  const url = new URL(request.url);
-  const querySessionId = url.searchParams.get('sessionId') ?? null;
-  if (querySessionId) {
-    return querySessionId;
-  }
-
+async function resolveBrowserSession(
+  service: TalliService,
+  request: Request,
+): Promise<{ sessionId: string; setCookie: string | null }> {
   const cookies = parseCookies(request.headers.get('cookie'));
-  const webSessionToken = cookies.get('talli_session');
-  if (webSessionToken) {
-    const resolved = await service.store.resolveWebSession(webSessionToken);
-    if (resolved) {
-      return resolved;
+  const sessionCookie = cookies.get(TALLI_SESSION_COOKIE_NAME) ?? null;
+  if (sessionCookie) {
+    const signedSessionId = verifySessionCookie(sessionCookie);
+    if (signedSessionId) {
+      return {
+        sessionId: signedSessionId,
+        setCookie: null,
+      };
+    }
+
+    const legacySessionId = await service.store.resolveWebSession(sessionCookie);
+    if (legacySessionId) {
+      return {
+        sessionId: legacySessionId,
+        setCookie: buildSessionCookie(legacySessionId, request),
+      };
     }
   }
 
-  return service.store.defaultSessionId;
+  const sessionId = randomUUID();
+  return {
+    sessionId,
+    setCookie: buildSessionCookie(sessionId, request),
+  };
+}
+
+function rejectSessionOverride(url: URL): Response | null {
+  if (url.searchParams.has('sessionId')) {
+    return jsonResponse(400, {
+      status: 'error',
+      errorCode: 'BAD_REQUEST',
+      message: 'Session overrides are not allowed on this endpoint.',
+    });
+  }
+  return null;
 }
 
 function findProjectRoot(startDir: string): string {
@@ -293,65 +414,133 @@ async function routeRequest(
   }
 
   if (request.method === 'GET' && url.pathname === '/api/me') {
-    const sessionId = await resolveSessionId(service, request);
+    const sessionOverride = rejectSessionOverride(url);
+    if (sessionOverride) {
+      return sessionOverride;
+    }
+
+    const session = await resolveBrowserSession(service, request);
+    const sessionId = session.sessionId;
     const current = await service.getCurrentUser(sessionId);
-    return jsonResponse(200, {
-      ok: true,
-      connected: current.connected,
-      userId: current.userId,
-      telegramUserId: current.telegramUserId,
-      telegramUsername: current.telegramUsername,
-      preferredCurrency: current.preferredCurrency,
-      ledgerCurrency: current.ledgerCurrency,
-      sessionId: current.sessionId,
-    });
+    return jsonResponseWithCookie(
+      200,
+      {
+        ok: true,
+        connected: current.connected,
+        userId: current.userId,
+        telegramUserId: current.telegramUserId,
+        telegramUsername: current.telegramUsername,
+        preferredCurrency: current.preferredCurrency,
+        ledgerCurrency: current.ledgerCurrency,
+        sessionId: current.sessionId,
+      },
+      session.setCookie,
+    );
   }
 
   if (request.method === 'GET' && url.pathname === '/api/ledger') {
-    const sessionId = await resolveSessionId(service, request);
-    return jsonResponse(200, await service.getLedger(sessionId));
+    const sessionOverride = rejectSessionOverride(url);
+    if (sessionOverride) {
+      return sessionOverride;
+    }
+
+    const session = await resolveBrowserSession(service, request);
+    return jsonResponseWithCookie(
+      200,
+      await service.getLedger(session.sessionId),
+      session.setCookie,
+    );
   }
 
   if (request.method === 'GET' && url.pathname === '/api/customers') {
-    const sessionId = await resolveSessionId(service, request);
-    const ledger = await service.getLedger(sessionId);
-    return jsonResponse(200, ledger.customers);
+    const sessionOverride = rejectSessionOverride(url);
+    if (sessionOverride) {
+      return sessionOverride;
+    }
+
+    const session = await resolveBrowserSession(service, request);
+    const ledger = await service.getLedger(session.sessionId);
+    return jsonResponseWithCookie(200, ledger.customers, session.setCookie);
   }
 
   if (request.method === 'GET' && url.pathname.startsWith('/api/customers/')) {
+    const sessionOverride = rejectSessionOverride(url);
+    if (sessionOverride) {
+      return sessionOverride;
+    }
+
     const customerId = decodeURIComponent(url.pathname.slice('/api/customers/'.length));
-    const sessionId = await resolveSessionId(service, request);
-    return jsonResponse(200, await service.getCustomerHistory(customerId, sessionId));
+    const session = await resolveBrowserSession(service, request);
+    return jsonResponseWithCookie(
+      200,
+      await service.getCustomerHistory(customerId, session.sessionId),
+      session.setCookie,
+    );
   }
 
   if (request.method === 'POST' && url.pathname === '/api/preferences/currency') {
-    const body = (await readJsonBody(request)) as { currency?: string };
-    const sessionId = await resolveSessionId(service, request);
-    if (typeof body.currency !== 'string' || !body.currency.trim()) {
+    const sessionOverride = rejectSessionOverride(url);
+    if (sessionOverride) {
+      return sessionOverride;
+    }
+
+    let rawBody: unknown;
+    try {
+      rawBody = await readJsonBody(request);
+    } catch {
       return jsonResponse(400, {
         status: 'error',
         message: 'A currency code is required.',
         errorCode: 'BAD_REQUEST',
       });
     }
-    await service.setPreferredCurrency(sessionId, body.currency.trim().toUpperCase());
-    return jsonResponse(200, {
-      ok: true,
-      sessionId,
-      preferredCurrency: body.currency.trim().toUpperCase(),
-    });
+
+    const body = currencyRequestSchema.safeParse(rawBody);
+    if (!body.success) {
+      return jsonResponse(400, {
+        status: 'error',
+        message: 'A currency code is required.',
+        errorCode: 'BAD_REQUEST',
+      });
+    }
+
+    const session = await resolveBrowserSession(service, request);
+    await service.setPreferredCurrency(session.sessionId, body.data.currency.trim().toUpperCase());
+    return jsonResponseWithCookie(
+      200,
+      {
+        ok: true,
+        sessionId: session.sessionId,
+        preferredCurrency: body.data.currency.trim().toUpperCase(),
+      },
+      session.setCookie,
+    );
   }
 
   if (request.method === 'GET' && url.pathname === '/api/proposals/current') {
-    const sessionId = await resolveSessionId(service, request);
-    const proposal = await service.getPendingLedgerMutation(sessionId);
-    return jsonResponse(200, {
-      status: proposal ? 'pending' : 'none',
-      proposal,
-    });
+    const sessionOverride = rejectSessionOverride(url);
+    if (sessionOverride) {
+      return sessionOverride;
+    }
+
+    const session = await resolveBrowserSession(service, request);
+    const proposal = await service.getPendingLedgerMutation(session.sessionId);
+    return jsonResponseWithCookie(
+      200,
+      {
+        status: proposal ? 'pending' : 'none',
+        proposal,
+      },
+      session.setCookie,
+    );
   }
 
   if (request.method === 'POST' && url.pathname === '/api/proposals/prepare') {
+    const sessionOverride = rejectSessionOverride(url);
+    if (sessionOverride) {
+      return sessionOverride;
+    }
+
     let body: unknown;
     try {
       body = await readJsonBody(request);
@@ -372,12 +561,21 @@ async function routeRequest(
       });
     }
 
-    const sessionId = await resolveSessionId(service, request);
-    return jsonResponse(200, await service.prepareLedgerMutation(sessionId, parsed.data));
+    const session = await resolveBrowserSession(service, request);
+    return jsonResponseWithCookie(
+      200,
+      await service.prepareLedgerMutation(session.sessionId, parsed.data),
+      session.setCookie,
+    );
   }
 
   if (request.method === 'POST' && url.pathname === '/api/proposals/confirm') {
     // This confirmation endpoint is for the visible first-party Talli UI, not a WebMCP tool.
+    const sessionOverride = rejectSessionOverride(url);
+    if (sessionOverride) {
+      return sessionOverride;
+    }
+
     let body: unknown;
     try {
       body = await readJsonBody(request);
@@ -398,14 +596,20 @@ async function routeRequest(
       });
     }
 
-    const sessionId = await resolveSessionId(service, request);
-    return jsonResponse(
+    const session = await resolveBrowserSession(service, request);
+    return jsonResponseWithCookie(
       200,
-      await service.confirmLedgerMutation(sessionId, parsed.data.proposalId),
+      await service.confirmLedgerMutation(session.sessionId, parsed.data.proposalId),
+      session.setCookie,
     );
   }
 
   if (request.method === 'POST' && url.pathname === '/api/proposals/cancel') {
+    const sessionOverride = rejectSessionOverride(url);
+    if (sessionOverride) {
+      return sessionOverride;
+    }
+
     let body: unknown;
     try {
       body = await readJsonBody(request);
@@ -426,21 +630,54 @@ async function routeRequest(
       });
     }
 
-    const sessionId = await resolveSessionId(service, request);
-    return jsonResponse(200, await service.cancelLedgerMutation(sessionId, parsed.data.proposalId));
+    const session = await resolveBrowserSession(service, request);
+    return jsonResponseWithCookie(
+      200,
+      await service.cancelLedgerMutation(session.sessionId, parsed.data.proposalId),
+      session.setCookie,
+    );
   }
 
   if (request.method === 'POST' && url.pathname === '/api/auth/telegram/link-token') {
-    const sessionId = await resolveSessionId(service, request);
-    const token = await service.createTelegramLinkToken(sessionId);
+    const sessionOverride = rejectSessionOverride(url);
+    if (sessionOverride) {
+      return sessionOverride;
+    }
+
+    let rawBody: unknown;
+    try {
+      rawBody = await readJsonBody(request);
+    } catch {
+      return jsonResponse(400, {
+        ok: false,
+        status: 'bad_request',
+        message: 'Invalid request payload.',
+      });
+    }
+
+    const bodyResult = emptyRequestSchema.safeParse(rawBody);
+    if (!bodyResult.success) {
+      return jsonResponse(400, {
+        ok: false,
+        status: 'bad_request',
+        message: 'Invalid request payload.',
+      });
+    }
+
+    const session = await resolveBrowserSession(service, request);
+    const token = await service.createTelegramLinkToken(session.sessionId);
     const botUsername = normalizeTelegramUsername(process.env.TELEGRAM_BOT_USERNAME);
     const deepLink = buildTelegramDeepLink(botUsername, token.token);
-    return jsonResponse(200, {
-      ok: true,
-      linkToken: token.token,
-      expiresAt: token.expiresAt,
-      deepLink,
-    });
+    return jsonResponseWithCookie(
+      200,
+      {
+        ok: true,
+        linkToken: token.token,
+        expiresAt: token.expiresAt,
+        deepLink,
+      },
+      session.setCookie,
+    );
   }
 
   if (request.method === 'GET' && url.pathname === '/api/auth/telegram/link-status') {
@@ -467,17 +704,7 @@ async function routeRequest(
       expiresAt: linkToken.expiresAt,
     });
     if (connected && linkToken.webSessionToken) {
-      response.headers.set(
-        'Set-Cookie',
-        serializeCookie({
-          name: 'talli_session',
-          value: linkToken.webSessionToken,
-          httpOnly: true,
-          sameSite: 'Lax',
-          secure: isSecureRequest(request),
-          maxAgeSeconds: 30 * 24 * 60 * 60,
-        }),
-      );
+      response.headers.set('Set-Cookie', buildSessionCookie(linkToken.userId, request));
     }
     return response;
   }
@@ -522,13 +749,42 @@ async function routeRequest(
   }
 
   if (request.method === 'POST' && url.pathname === '/api/auth/telegram/disconnect') {
-    const sessionId = await resolveSessionId(service, request);
-    await service.disconnectTelegram(sessionId);
-    return jsonResponse(200, {
-      ok: true,
-      connected: false,
-      sessionId,
-    });
+    const sessionOverride = rejectSessionOverride(url);
+    if (sessionOverride) {
+      return sessionOverride;
+    }
+
+    let rawBody: unknown;
+    try {
+      rawBody = await readJsonBody(request);
+    } catch {
+      return jsonResponse(400, {
+        ok: false,
+        status: 'bad_request',
+        message: 'Invalid request payload.',
+      });
+    }
+
+    const bodyResult = emptyRequestSchema.safeParse(rawBody);
+    if (!bodyResult.success) {
+      return jsonResponse(400, {
+        ok: false,
+        status: 'bad_request',
+        message: 'Invalid request payload.',
+      });
+    }
+
+    const session = await resolveBrowserSession(service, request);
+    await service.disconnectTelegram(session.sessionId);
+    return jsonResponseWithCookie(
+      200,
+      {
+        ok: true,
+        connected: false,
+        sessionId: session.sessionId,
+      },
+      session.setCookie,
+    );
   }
 
   if (request.method === 'POST' && url.pathname === '/api/demo/reset') {
@@ -544,9 +800,26 @@ async function routeRequest(
   }
 
   if (request.method === 'POST' && url.pathname === '/api/message') {
+    const sessionOverride = rejectSessionOverride(url);
+    if (sessionOverride) {
+      return sessionOverride;
+    }
+
     let body: TalliMessageInput;
     try {
-      body = (await readJsonBody(request)) as TalliMessageInput;
+      const parsed = messageRequestSchema.safeParse(await readJsonBody(request));
+      if (!parsed.success) {
+        return jsonResponse(400, {
+          status: 'error',
+          message: 'Invalid JSON payload.',
+          action: null,
+          ledgerChange: null,
+          clarification: null,
+          errorCode: 'BAD_REQUEST',
+          modelAvailable: Boolean(service.interpreter),
+        });
+      }
+      body = parsed.data;
     } catch {
       return jsonResponse(400, {
         status: 'error',
@@ -571,13 +844,13 @@ async function routeRequest(
       });
     }
 
-    const sessionId = body.sessionId ?? (await resolveSessionId(service, request));
+    const session = await resolveBrowserSession(service, request);
     const response = await service.processMessage({
       ...body,
-      sessionId,
+      sessionId: session.sessionId,
       origin: 'web',
     });
-    return jsonResponse(200, response);
+    return jsonResponseWithCookie(200, response, session.setCookie);
   }
 
   return jsonResponse(404, {

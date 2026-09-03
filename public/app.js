@@ -178,10 +178,6 @@ function isConnectedAccount() {
   return Boolean(state.account?.connected);
 }
 
-function activeSessionId() {
-  return state.account.userId ?? DEMO_SESSION_ID;
-}
-
 function telegramConnectionButtons() {
   const buttons = [];
   if (dom.connectTelegramButton) {
@@ -193,14 +189,6 @@ function telegramConnectionButtons() {
     }
   }
   return buttons;
-}
-
-function sessionQuerySuffix() {
-  return `?sessionId=${encodeURIComponent(activeSessionId())}`;
-}
-
-function ledgerPathSuffix() {
-  return sessionQuerySuffix();
 }
 
 function statusLabel(status) {
@@ -1205,37 +1193,37 @@ const api = {
     return apiRequest('/api/me');
   },
   async ledger() {
-    return apiRequest(`/api/ledger${ledgerPathSuffix()}`);
+    return apiRequest('/api/ledger');
   },
   async proposalCurrent() {
-    return apiRequest(`/api/proposals/current${ledgerPathSuffix()}`);
+    return apiRequest('/api/proposals/current');
   },
   async proposalPrepare(body, signal) {
-    return apiRequest(`/api/proposals/prepare${ledgerPathSuffix()}`, {
+    return apiRequest('/api/proposals/prepare', {
       method: 'POST',
       body: JSON.stringify(body),
       signal,
     });
   },
   async proposalConfirm(proposalId, signal) {
-    return apiRequest(`/api/proposals/confirm${ledgerPathSuffix()}`, {
+    return apiRequest('/api/proposals/confirm', {
       method: 'POST',
       body: JSON.stringify({ proposalId }),
       signal,
     });
   },
   async proposalCancel(proposalId, signal) {
-    return apiRequest(`/api/proposals/cancel${ledgerPathSuffix()}`, {
+    return apiRequest('/api/proposals/cancel', {
       method: 'POST',
       body: JSON.stringify({ proposalId }),
       signal,
     });
   },
   async customers() {
-    return apiRequest(`/api/customers${ledgerPathSuffix()}`);
+    return apiRequest('/api/customers');
   },
   async customer(customerId) {
-    return apiRequest(`/api/customers/${encodeURIComponent(customerId)}${ledgerPathSuffix()}`);
+    return apiRequest(`/api/customers/${encodeURIComponent(customerId)}`);
   },
   async createTelegramLink() {
     return apiRequest('/api/auth/telegram/link-token', {
@@ -1265,7 +1253,6 @@ const api = {
       timezone: TIMEZONE,
       language: detectLanguage(text),
       origin: 'web',
-      sessionId: activeSessionId(),
     };
     return apiRequest('/api/message', {
       method: 'POST',
@@ -1966,7 +1953,6 @@ async function init() {
   void registerTalliWebMcpTools({
     document,
     requestJson: apiRequest,
-    getSessionId: activeSessionId,
     onActivity: appendActivityMessage,
     onProposalOutcome: applyProposalOutcome,
   });
